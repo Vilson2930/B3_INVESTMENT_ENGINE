@@ -1,0 +1,276 @@
+# ============================================================
+# B3_INVESTMENT_ENGINE
+# GitHub Actions
+#
+# Execução automática do sistema:
+#
+# 1. Instala dependências
+# 2. Valida configuração
+# 3. Testa Fundamental Engine
+# 4. Testa Technical Timing Engine
+# 5. Testa Integration Engine
+# 6. Executa o B3 Investment Engine
+# 7. Gera relatório final
+# 8. Preserva resultados como artifact
+# ============================================================
+
+name: Run B3 Investment Engine
+
+on:
+
+  # ----------------------------------------------------------
+  # EXECUÇÃO AUTOMÁTICA
+  # ----------------------------------------------------------
+  #
+  # Segunda a sexta.
+  #
+  # 22:30 UTC
+  # ≈ 19:30 horário de Brasília quando UTC-3.
+  #
+  # A execução ocorre depois do pregão regular da B3.
+  # ----------------------------------------------------------
+
+  schedule:
+    - cron: "30 22 * * 1-5"
+
+  # ----------------------------------------------------------
+  # EXECUÇÃO MANUAL
+  # ----------------------------------------------------------
+
+  workflow_dispatch:
+
+
+# ============================================================
+# PERMISSÕES
+# ============================================================
+
+permissions:
+  contents: read
+
+
+# ============================================================
+# JOB
+# ============================================================
+
+jobs:
+
+  run-engine:
+
+    name: B3 Investment Engine
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 30
+
+
+    steps:
+
+      # ======================================================
+      # 1. CHECKOUT
+      # ======================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ======================================================
+      # 2. PYTHON
+      # ======================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+
+      # ======================================================
+      # 3. DEPENDÊNCIAS
+      # ======================================================
+
+      - name: Upgrade pip
+        run: |
+          python -m pip install --upgrade pip
+
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+
+      # ======================================================
+      # 4. INFORMAÇÕES DO AMBIENTE
+      # ======================================================
+
+      - name: Environment information
+        run: |
+          echo "=========================================="
+          echo "B3_INVESTMENT_ENGINE"
+          echo "=========================================="
+          python --version
+          pip --version
+          echo "UTC:"
+          date -u
+          echo "=========================================="
+
+
+      # ======================================================
+      # 5. VALIDAR CONFIGURAÇÃO
+      # ======================================================
+
+      - name: Validate configuration
+        run: |
+          python config.py
+
+
+      # ======================================================
+      # 6. TESTAR FUNDAMENTAL ENGINE
+      # ======================================================
+
+      - name: Test Fundamental Engine
+        run: |
+          python fundamental_engine.py
+
+
+      # ======================================================
+      # 7. TESTAR TECHNICAL TIMING ENGINE
+      # ======================================================
+
+      - name: Test Technical Timing Engine
+        run: |
+          python technical_engine.py
+
+
+      # ======================================================
+      # 8. TESTAR INTEGRATION ENGINE
+      # ======================================================
+
+      - name: Test Integration Engine
+        run: |
+          python integration_engine.py
+
+
+      # ======================================================
+      # 9. VERIFICAR DADOS DE ENTRADA
+      # ======================================================
+
+      - name: Check input data
+        run: |
+
+          echo "Verificando arquivos de entrada..."
+
+          if [ ! -f "data/fundamental_input.csv" ]; then
+            echo "ERRO:"
+            echo "data/fundamental_input.csv não encontrado."
+            exit 1
+          fi
+
+          if [ ! -f "data/technical_prices.csv" ]; then
+            echo "ERRO:"
+            echo "data/technical_prices.csv não encontrado."
+            exit 1
+          fi
+
+          echo "Arquivos de entrada encontrados."
+
+          ls -lh data/
+
+
+      # ======================================================
+      # 10. EXECUTAR SISTEMA
+      # ======================================================
+
+      - name: Run B3 Investment Engine
+        run: |
+          python main.py
+
+
+      # ======================================================
+      # 11. GERAR RELATÓRIO
+      # ======================================================
+
+      - name: Generate final report
+        run: |
+          python report_generator.py
+
+
+      # ======================================================
+      # 12. LISTAR RESULTADOS
+      # ======================================================
+
+      - name: Show generated files
+        if: always()
+        run: |
+
+          echo "=========================================="
+          echo "ARQUIVOS GERADOS"
+          echo "=========================================="
+
+          if [ -d "final_report" ]; then
+            find final_report -maxdepth 2 -type f -print
+          fi
+
+          if [ -d "checkpoints" ]; then
+            find checkpoints -maxdepth 2 -type f -print
+          fi
+
+          if [ -d "logs" ]; then
+            find logs -maxdepth 2 -type f -print
+          fi
+
+
+      # ======================================================
+      # 13. ARTIFACT — RELATÓRIO FINAL
+      # ======================================================
+
+      - name: Upload final report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+
+          name: B3_INVESTMENT_ENGINE_REPORT
+
+          path: |
+            final_report/
+
+          if-no-files-found: error
+
+          retention-days: 30
+
+
+      # ======================================================
+      # 14. ARTIFACT — CHECKPOINT
+      # ======================================================
+
+      - name: Upload checkpoints
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+
+          name: B3_INVESTMENT_ENGINE_CHECKPOINTS
+
+          path: |
+            checkpoints/
+
+          if-no-files-found: warn
+
+          retention-days: 30
+
+
+      # ======================================================
+      # 15. ARTIFACT — LOGS EM CASO DE FALHA
+      # ======================================================
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+
+          name: B3_INVESTMENT_ENGINE_FAILURE_LOGS
+
+          path: |
+            logs/
+
+          if-no-files-found: ignore
+
+          retention-days: 30
