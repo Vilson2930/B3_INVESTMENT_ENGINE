@@ -6,7 +6,8 @@
 #
 # PAPEL:
 # - Executado somente após a análise fundamental.
-# - Calcula os 7 indicadores preservados pelo estudo.
+# - Consome os 7 indicadores congelados do estudo Cell06B.
+# - NÃO recalcula indicadores técnicos.
 # - NÃO cria Technical Score.
 # - NÃO veta empresa fundamentalmente aprovada.
 # - NÃO recupera empresa reprovada nos fundamentos.
@@ -33,7 +34,22 @@ from config import (
 
 
 # ============================================================
-# 1. RESULTADO DO MOTOR TÉCNICO
+# 1. INDICADORES CONGELADOS
+# ============================================================
+
+FROZEN_INDICATORS = [
+    "SMA200_SLOPE_20D",
+    "ATR_PCT",
+    "ROC_60",
+    "MACD_HIST_PCT",
+    "DIST_SMA_200",
+    "BB_WIDTH",
+    "DIST_SMA_50",
+]
+
+
+# ============================================================
+# 2. RESULTADO DO MOTOR TÉCNICO
 # ============================================================
 
 @dataclass
@@ -73,388 +89,7 @@ class TechnicalResult:
 
 
 # ============================================================
-# 2. VALIDAÇÃO DA SÉRIE
-# ============================================================
-
-def prepare_prices(df: pd.DataFrame) -> pd.DataFrame:
-
-    required = [
-        "DATE",
-        "OPEN",
-        "HIGH",
-        "LOW",
-        "CLOSE",
-    ]
-
-    missing = [
-        col
-        for col in required
-        if col not in df.columns
-    ]
-
-    if missing:
-        raise ValueError(
-            f"Colunas ausentes: {missing}"
-        )
-
-    data = df.copy()
-
-    data["DATE"] = pd.to_datetime(
-        data["DATE"],
-        errors="coerce"
-    )
-
-    for col in [
-        "OPEN",
-        "HIGH",
-        "LOW",
-        "CLOSE",
-    ]:
-
-        data[col] = pd.to_numeric(
-            data[col],
-            errors="coerce"
-        )
-
-    data = (
-        data
-        .dropna(
-            subset=[
-                "DATE",
-                "OPEN",
-                "HIGH",
-                "LOW",
-                "CLOSE",
-            ]
-        )
-        .sort_values("DATE")
-        .drop_duplicates(
-            subset=["DATE"],
-            keep="last"
-        )
-        .reset_index(drop=True)
-    )
-
-    invalid = (
-        (data["OPEN"] <= 0)
-        | (data["HIGH"] <= 0)
-        | (data["LOW"] <= 0)
-        | (data["CLOSE"] <= 0)
-        | (data["HIGH"] < data["LOW"])
-    )
-
-    if invalid.any():
-
-        raise ValueError(
-            "Série OHLC contém valores inválidos."
-        )
-
-    return data
-
-
-# ============================================================
-# 3. MÉDIAS MÓVEIS
-# ============================================================
-
-def add_moving_averages(
-    data: pd.DataFrame
-) -> pd.DataFrame:
-
-    data = data.copy()
-
-    data["SMA_50"] = (
-        data["CLOSE"]
-        .rolling(
-            window=50,
-            min_periods=50
-        )
-        .mean()
-    )
-
-    data["SMA_200"] = (
-        data["CLOSE"]
-        .rolling(
-            window=200,
-            min_periods=200
-        )
-        .mean()
-    )
-
-    return data
-
-
-# ============================================================
-# 4. SMA200 SLOPE 20D
-# ============================================================
-
-def add_sma200_slope(
-    data: pd.DataFrame
-) -> pd.DataFrame:
-
-    data = data.copy()
-
-    data["SMA200_SLOPE_20D"] = (
-        data["SMA_200"]
-        /
-        data["SMA_200"].shift(20)
-        - 1.0
-    )
-
-    return data
-
-
-# ============================================================
-# 5. DISTÂNCIA DAS MÉDIAS
-# ============================================================
-
-def add_distance_from_ma(
-    data: pd.DataFrame
-) -> pd.DataFrame:
-
-    data = data.copy()
-
-    data["DIST_SMA_50"] = (
-        data["CLOSE"]
-        /
-        data["SMA_50"]
-        - 1.0
-    )
-
-    data["DIST_SMA_200"] = (
-        data["CLOSE"]
-        /
-        data["SMA_200"]
-        - 1.0
-    )
-
-    return data
-
-
-# ============================================================
-# 6. ROC 60
-# ============================================================
-
-def add_roc_60(
-    data: pd.DataFrame
-) -> pd.DataFrame:
-
-    data = data.copy()
-
-    data["ROC_60"] = (
-        data["CLOSE"]
-        /
-        data["CLOSE"].shift(60)
-        - 1.0
-    )
-
-    return data
-
-
-# ============================================================
-# 7. ATR PERCENTUAL
-# ============================================================
-
-def add_atr_pct(
-    data: pd.DataFrame
-) -> pd.DataFrame:
-
-    data = data.copy()
-
-    previous_close = (
-        data["CLOSE"].shift(1)
-    )
-
-    tr1 = (
-        data["HIGH"]
-        - data["LOW"]
-    )
-
-    tr2 = (
-        data["HIGH"]
-        - previous_close
-    ).abs()
-
-    tr3 = (
-        data["LOW"]
-        - previous_close
-    ).abs()
-
-    true_range = pd.concat(
-        [
-            tr1,
-            tr2,
-            tr3,
-        ],
-        axis=1
-    ).max(axis=1)
-
-    atr14 = (
-        true_range
-        .rolling(
-            window=14,
-            min_periods=14
-        )
-        .mean()
-    )
-
-    data["ATR_PCT"] = (
-        atr14
-        /
-        data["CLOSE"]
-    )
-
-    return data
-
-
-# ============================================================
-# 8. MACD HISTOGRAM PERCENTUAL
-# ============================================================
-
-def add_macd_hist_pct(
-    data: pd.DataFrame
-) -> pd.DataFrame:
-
-    data = data.copy()
-
-    ema12 = (
-        data["CLOSE"]
-        .ewm(
-            span=12,
-            adjust=False,
-            min_periods=12
-        )
-        .mean()
-    )
-
-    ema26 = (
-        data["CLOSE"]
-        .ewm(
-            span=26,
-            adjust=False,
-            min_periods=26
-        )
-        .mean()
-    )
-
-    macd = (
-        ema12
-        - ema26
-    )
-
-    signal = (
-        macd
-        .ewm(
-            span=9,
-            adjust=False,
-            min_periods=9
-        )
-        .mean()
-    )
-
-    histogram = (
-        macd
-        - signal
-    )
-
-    data["MACD_HIST_PCT"] = (
-        histogram
-        /
-        data["CLOSE"]
-    )
-
-    return data
-
-
-# ============================================================
-# 9. BOLLINGER WIDTH
-# ============================================================
-
-def add_bb_width(
-    data: pd.DataFrame
-) -> pd.DataFrame:
-
-    data = data.copy()
-
-    sma20 = (
-        data["CLOSE"]
-        .rolling(
-            window=20,
-            min_periods=20
-        )
-        .mean()
-    )
-
-    std20 = (
-        data["CLOSE"]
-        .rolling(
-            window=20,
-            min_periods=20
-        )
-        .std(ddof=0)
-    )
-
-    upper = (
-        sma20
-        + 2.0 * std20
-    )
-
-    lower = (
-        sma20
-        - 2.0 * std20
-    )
-
-    data["BB_WIDTH"] = (
-        (upper - lower)
-        /
-        sma20
-    )
-
-    return data
-
-
-# ============================================================
-# 10. CALCULAR TODOS OS INDICADORES
-# ============================================================
-
-def calculate_indicators(
-    df: pd.DataFrame
-) -> pd.DataFrame:
-
-    data = prepare_prices(df)
-
-    data = add_moving_averages(
-        data
-    )
-
-    data = add_sma200_slope(
-        data
-    )
-
-    data = add_distance_from_ma(
-        data
-    )
-
-    data = add_roc_60(
-        data
-    )
-
-    data = add_atr_pct(
-        data
-    )
-
-    data = add_macd_hist_pct(
-        data
-    )
-
-    data = add_bb_width(
-        data
-    )
-
-    return data
-
-
-# ============================================================
-# 11. CONVERTER NÚMERO
+# 3. CONVERTER NÚMERO
 # ============================================================
 
 def _safe_float(value):
@@ -464,6 +99,7 @@ def _safe_float(value):
 
     try:
         value = float(value)
+
     except (TypeError, ValueError):
         return None
 
@@ -474,14 +110,95 @@ def _safe_float(value):
 
 
 # ============================================================
-# 12. OBSERVAÇÕES TÉCNICAS
+# 4. VALIDAR DADOS TÉCNICOS
+# ============================================================
+
+def prepare_technical_data(
+    df: pd.DataFrame
+) -> pd.DataFrame:
+
+    required = [
+        "TICKER",
+        "DATE",
+        "TECH_SEGMENT_ID",
+        *FROZEN_INDICATORS,
+    ]
+
+    missing = [
+        column
+        for column in required
+        if column not in df.columns
+    ]
+
+    if missing:
+
+        raise ValueError(
+            "Colunas técnicas congeladas ausentes: "
+            f"{missing}"
+        )
+
+    data = df.copy()
+
+    data["TICKER"] = (
+        data["TICKER"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    data["DATE"] = pd.to_datetime(
+        data["DATE"],
+        errors="coerce",
+    )
+
+    for indicator in FROZEN_INDICATORS:
+
+        data[indicator] = pd.to_numeric(
+            data[indicator],
+            errors="coerce",
+        )
+
+    data = (
+        data
+        .dropna(
+            subset=[
+                "TICKER",
+                "DATE",
+                "TECH_SEGMENT_ID",
+            ]
+        )
+        .sort_values(
+            [
+                "DATE",
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "TICKER",
+                "DATE",
+            ],
+            keep="last",
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    return data
+
+
+# ============================================================
+# 5. OBSERVAÇÕES TÉCNICAS
 # ============================================================
 #
-# IMPORTANTE:
+# São somente descrições matemáticas.
 #
-# São descrições matemáticas do estado atual.
-# Não são BUY / SELL.
-# Não são gatilhos validados.
+# NÃO representam:
+# - BUY
+# - SELL
+# - score
+# - veto
+# - gatilho validado
 # ============================================================
 
 def build_observations(
@@ -574,6 +291,12 @@ def build_observations(
                 "PRECO_ABAIXO_SMA50"
             )
 
+        else:
+
+            observations.append(
+                "PRECO_NA_SMA50"
+            )
+
     if dist200 is not None:
 
         if dist200 > 0:
@@ -586,6 +309,12 @@ def build_observations(
 
             observations.append(
                 "PRECO_ABAIXO_SMA200"
+            )
+
+        else:
+
+            observations.append(
+                "PRECO_NA_SMA200"
             )
 
     if macd_hist is not None:
@@ -602,6 +331,12 @@ def build_observations(
                 "MACD_HIST_NEGATIVO"
             )
 
+        else:
+
+            observations.append(
+                "MACD_HIST_NEUTRO"
+            )
+
     if not observations:
 
         return "SEM_CONTEXTO_TECNICO"
@@ -612,7 +347,110 @@ def build_observations(
 
 
 # ============================================================
-# 13. AVALIAR UM TICKER
+# 6. RESULTADO SEM APLICAÇÃO TÉCNICA
+# ============================================================
+
+def _not_applicable_result(
+    ticker: str
+) -> TechnicalResult:
+
+    return TechnicalResult(
+
+        ticker=ticker,
+
+        technical_available=False,
+
+        technical_role=(
+            "NOT_APPLICABLE"
+        ),
+
+        technical_engine_version=(
+            TECHNICAL_ENGINE_VERSION
+        ),
+
+        technical_engine_mode=(
+            TECHNICAL_ENGINE_MODE
+        ),
+
+        technical_score=None,
+
+        mandatory_trigger=False,
+
+        validated_oos_trigger=False,
+
+        sma200_slope_20d=None,
+
+        atr_pct=None,
+
+        roc_60=None,
+
+        macd_hist_pct=None,
+
+        dist_sma_200=None,
+
+        bb_width=None,
+
+        dist_sma_50=None,
+
+        observations=(
+            "FUNDAMENTAL_NOT_APPROVED"
+        ),
+    )
+
+
+# ============================================================
+# 7. RESULTADO SEM DADOS TÉCNICOS
+# ============================================================
+
+def _unavailable_result(
+    ticker: str,
+    reason: str,
+) -> TechnicalResult:
+
+    return TechnicalResult(
+
+        ticker=ticker,
+
+        technical_available=False,
+
+        technical_role=(
+            "ENTRY_CONTEXT"
+        ),
+
+        technical_engine_version=(
+            TECHNICAL_ENGINE_VERSION
+        ),
+
+        technical_engine_mode=(
+            TECHNICAL_ENGINE_MODE
+        ),
+
+        technical_score=None,
+
+        mandatory_trigger=False,
+
+        validated_oos_trigger=False,
+
+        sma200_slope_20d=None,
+
+        atr_pct=None,
+
+        roc_60=None,
+
+        macd_hist_pct=None,
+
+        dist_sma_200=None,
+
+        bb_width=None,
+
+        dist_sma_50=None,
+
+        observations=reason,
+    )
+
+
+# ============================================================
+# 8. AVALIAR UM TICKER
 # ============================================================
 
 def evaluate_ticker(
@@ -635,68 +473,58 @@ def evaluate_ticker(
     # REGRA CENTRAL
     # --------------------------------------------------------
     #
-    # O motor técnico não deve transformar empresa
-    # fundamentalmente reprovada em elegível.
+    # Empresa fundamentalmente reprovada não pode ser
+    # recuperada pelo técnico.
     # --------------------------------------------------------
 
     if not fundamental_approved:
 
-        return TechnicalResult(
-
-            ticker=ticker,
-
-            technical_available=False,
-
-            technical_role=(
-                "NOT_APPLICABLE"
-            ),
-
-            technical_engine_version=(
-                TECHNICAL_ENGINE_VERSION
-            ),
-
-            technical_engine_mode=(
-                TECHNICAL_ENGINE_MODE
-            ),
-
-            technical_score=None,
-
-            mandatory_trigger=False,
-
-            validated_oos_trigger=False,
-
-            sma200_slope_20d=None,
-
-            atr_pct=None,
-
-            roc_60=None,
-
-            macd_hist_pct=None,
-
-            dist_sma_200=None,
-
-            bb_width=None,
-
-            dist_sma_50=None,
-
-            observations=(
-                "FUNDAMENTAL_NOT_APPROVED"
-            ),
+        return _not_applicable_result(
+            ticker
         )
 
-    data = calculate_indicators(
+    # --------------------------------------------------------
+    # Sem base técnica
+    # --------------------------------------------------------
+
+    if prices is None or prices.empty:
+
+        return _unavailable_result(
+            ticker=ticker,
+            reason="SEM_DADOS_TECNICOS",
+        )
+
+    # --------------------------------------------------------
+    # Ler indicadores congelados
+    # --------------------------------------------------------
+
+    data = prepare_technical_data(
         prices
     )
 
+    data = data[
+        data["TICKER"] == ticker
+    ].copy()
+
     if data.empty:
 
-        raise ValueError(
-            f"Sem dados técnicos para {ticker}."
+        return _unavailable_result(
+            ticker=ticker,
+            reason="SEM_DADOS_TECNICOS",
         )
 
-    latest = data.iloc[-1]
+    # --------------------------------------------------------
+    # Último registro disponível do checkpoint congelado
+    # --------------------------------------------------------
+
+    latest = (
+        data
+        .sort_values("DATE")
+        .iloc[-1]
+    )
 
     values = {
+
         "SMA200_SLOPE_20D":
             _safe_float(
                 latest.get(
@@ -755,14 +583,31 @@ def evaluate_ticker(
     technical_available = (
         available_count
         ==
-        len(
-            TECHNICAL_CONTEXT_INDICATORS
-        )
+        len(FROZEN_INDICATORS)
     )
 
     observations = build_observations(
         latest
     )
+
+    if not technical_available:
+
+        observations = (
+            "CONTEXTO_TECNICO_INCOMPLETO"
+            + (
+                "|"
+                + observations
+
+                if observations
+                != "SEM_CONTEXTO_TECNICO"
+
+                else ""
+            )
+        )
+
+    # --------------------------------------------------------
+    # Resultado
+    # --------------------------------------------------------
 
     return TechnicalResult(
 
@@ -841,7 +686,7 @@ def evaluate_ticker(
 
 
 # ============================================================
-# 14. RESULTADO → DICIONÁRIO
+# 9. RESULTADO → DICIONÁRIO
 # ============================================================
 
 def result_to_dict(
@@ -859,56 +704,137 @@ def result_to_dict(
 
 
 # ============================================================
-# 15. AUTOTESTE
+# 10. AUTOTESTE
+# ============================================================
+#
+# O autoteste não calcula indicadores.
+# Ele fornece diretamente os indicadores congelados,
+# exatamente como ocorrerá em produção.
 # ============================================================
 
 def self_test():
 
-    np.random.seed(42)
-
     dates = pd.bdate_range(
-        start="2024-01-01",
-        periods=320
-    )
-
-    base = np.linspace(
-        20.0,
-        30.0,
-        len(dates)
-    )
-
-    noise = np.random.normal(
-        0.0,
-        0.15,
-        len(dates)
-    )
-
-    close = (
-        base
-        + noise
-    )
-
-    close = np.maximum(
-        close,
-        1.0
+        start="2025-12-22",
+        periods=5,
     )
 
     test_data = pd.DataFrame({
 
+        "CD_CVM": [
+            99999,
+            99999,
+            99999,
+            99999,
+            99999,
+        ],
+
+        "TICKER": [
+            "TEST3",
+            "TEST3",
+            "TEST3",
+            "TEST3",
+            "TEST3",
+        ],
+
         "DATE":
             dates,
 
-        "OPEN":
-            close * 0.998,
+        "TECH_SEGMENT_ID": [
+            "0_0",
+            "0_0",
+            "0_0",
+            "0_0",
+            "0_0",
+        ],
 
-        "HIGH":
-            close * 1.015,
+        "OPEN": [
+            10.0,
+            10.1,
+            10.2,
+            10.3,
+            10.4,
+        ],
 
-        "LOW":
-            close * 0.985,
+        "HIGH": [
+            10.2,
+            10.3,
+            10.4,
+            10.5,
+            10.6,
+        ],
 
-        "CLOSE":
-            close,
+        "LOW": [
+            9.8,
+            9.9,
+            10.0,
+            10.1,
+            10.2,
+        ],
+
+        "CLOSE": [
+            10.1,
+            10.2,
+            10.3,
+            10.4,
+            10.5,
+        ],
+
+        "SMA200_SLOPE_20D": [
+            0.01,
+            0.011,
+            0.012,
+            0.013,
+            0.014,
+        ],
+
+        "ATR_PCT": [
+            0.03,
+            0.031,
+            0.032,
+            0.033,
+            0.034,
+        ],
+
+        "ROC_60": [
+            0.05,
+            0.06,
+            0.07,
+            0.08,
+            0.09,
+        ],
+
+        "MACD_HIST_PCT": [
+            -0.01,
+            -0.005,
+            0.001,
+            0.003,
+            0.005,
+        ],
+
+        "DIST_SMA_200": [
+            0.02,
+            0.025,
+            0.03,
+            0.035,
+            0.04,
+        ],
+
+        "BB_WIDTH": [
+            0.10,
+            0.11,
+            0.12,
+            0.13,
+            0.14,
+        ],
+
+        "DIST_SMA_50": [
+            0.01,
+            0.015,
+            0.02,
+            0.025,
+            0.03,
+        ],
     })
 
     # --------------------------------------------------------
@@ -948,6 +874,24 @@ def self_test():
     assert (
         approved.technical_available
         is True
+    )
+
+    assert (
+        approved.sma200_slope_20d
+        ==
+        0.014
+    )
+
+    assert (
+        approved.roc_60
+        ==
+        0.09
+    )
+
+    assert (
+        approved.macd_hist_pct
+        ==
+        0.005
     )
 
     # --------------------------------------------------------
@@ -1018,6 +962,16 @@ def self_test():
         7
     )
 
+    assert (
+        set(
+            TECHNICAL_CONTEXT_INDICATORS
+        )
+        ==
+        set(
+            FROZEN_INDICATORS
+        )
+    )
+
     print(
         "✓ Technical Timing Engine: "
         "autoteste aprovado."
@@ -1025,7 +979,7 @@ def self_test():
 
 
 # ============================================================
-# 16. EXECUÇÃO DIRETA
+# 11. EXECUÇÃO DIRETA
 # ============================================================
 
 if __name__ == "__main__":
@@ -1050,7 +1004,11 @@ if __name__ == "__main__":
     )
 
     print(
-        "✓ 7 indicadores técnicos preservados."
+        "✓ 7 indicadores técnicos congelados preservados."
+    )
+
+    print(
+        "✓ Indicadores NÃO são recalculados."
     )
 
     print(
