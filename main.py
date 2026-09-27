@@ -13,6 +13,9 @@
 # Integration Engine
 #        ↓
 # Resultado Final
+#
+# ARQUITETURA:
+# FUNDAMENTAL FIRST + TECHNICAL CONTEXT
 # ============================================================
 
 from pathlib import Path
@@ -48,32 +51,6 @@ from integration_engine import (
 
 # ============================================================
 # 1. ARQUIVOS DE ENTRADA
-# ============================================================
-#
-# O GitHub Actions posteriormente alimentará estes arquivos.
-#
-# fundamental_input.csv
-#
-# Colunas mínimas:
-#
-# TICKER
-# QUALITY_SCORE
-# HISTORY_YEARS
-# AVG_DAILY_LIQUIDITY_BRL
-# VALUATION_SCORE
-#
-#
-# technical_prices.csv
-#
-# Colunas mínimas:
-#
-# TICKER
-# DATE
-# OPEN
-# HIGH
-# LOW
-# CLOSE
-#
 # ============================================================
 
 FUNDAMENTAL_INPUT_FILE = (
@@ -124,13 +101,34 @@ FUNDAMENTAL_REQUIRED_COLUMNS = [
     "VALUATION_SCORE",
 ]
 
+
+# ============================================================
+# Base técnica congelada derivada do Cell06B.
+#
+# Os 7 indicadores já chegam calculados.
+# O main.py NÃO deve removê-los.
+# ============================================================
+
+TECHNICAL_INDICATORS = [
+    "SMA200_SLOPE_20D",
+    "ATR_PCT",
+    "ROC_60",
+    "MACD_HIST_PCT",
+    "DIST_SMA_200",
+    "BB_WIDTH",
+    "DIST_SMA_50",
+]
+
 TECHNICAL_REQUIRED_COLUMNS = [
+    "CD_CVM",
     "TICKER",
     "DATE",
+    "TECH_SEGMENT_ID",
     "OPEN",
     "HIGH",
     "LOW",
     "CLOSE",
+    *TECHNICAL_INDICATORS,
 ]
 
 
@@ -185,6 +183,7 @@ def load_fundamental_input() -> pd.DataFrame:
         str(column)
         .strip()
         .upper()
+
         for column in df.columns
     ]
 
@@ -224,7 +223,14 @@ def load_fundamental_input() -> pd.DataFrame:
 
 
 # ============================================================
-# 6. CARREGAR PREÇOS
+# 6. CARREGAR BASE TÉCNICA
+# ============================================================
+#
+# IMPORTANTE:
+#
+# Esta função NÃO recalcula indicadores.
+# Ela apenas carrega e valida os valores congelados
+# provenientes do Cell06B.
 # ============================================================
 
 def load_technical_prices() -> pd.DataFrame:
@@ -234,7 +240,7 @@ def load_technical_prices() -> pd.DataFrame:
         raise FileNotFoundError(
             "\nArquivo técnico não encontrado:\n"
             f"{TECHNICAL_PRICES_FILE}\n\n"
-            "O pipeline de preços deverá gerar "
+            "O pipeline técnico deverá gerar "
             "technical_prices.csv antes da execução."
         )
 
@@ -247,6 +253,7 @@ def load_technical_prices() -> pd.DataFrame:
         str(column)
         .strip()
         .upper()
+
         for column in df.columns
     ]
 
@@ -268,12 +275,36 @@ def load_technical_prices() -> pd.DataFrame:
         errors="coerce",
     )
 
+    df["CD_CVM"] = pd.to_numeric(
+        df["CD_CVM"],
+        errors="coerce",
+    )
+
+    for column in [
+        "OPEN",
+        "HIGH",
+        "LOW",
+        "CLOSE",
+        *TECHNICAL_INDICATORS,
+    ]:
+
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+
     df = (
         df
         .dropna(
             subset=[
+                "CD_CVM",
                 "TICKER",
                 "DATE",
+                "TECH_SEGMENT_ID",
+                "OPEN",
+                "HIGH",
+                "LOW",
+                "CLOSE",
             ]
         )
         .sort_values(
@@ -282,7 +313,9 @@ def load_technical_prices() -> pd.DataFrame:
                 "DATE",
             ]
         )
-        .reset_index(drop=True)
+        .reset_index(
+            drop=True
+        )
     )
 
     return df
@@ -325,7 +358,21 @@ def run_fundamental_engine(
 
 
 # ============================================================
-# 8. SELECIONAR PREÇOS DO TICKER
+# 8. SELECIONAR DADOS TÉCNICOS DO TICKER
+# ============================================================
+#
+# DIFERENÇA IMPORTANTE:
+#
+# Antes:
+# main.py entregava somente OHLC.
+#
+# Agora:
+# entrega também:
+# - CD_CVM
+# - TECH_SEGMENT_ID
+# - os 7 indicadores congelados
+#
+# Nenhum indicador é recalculado aqui.
 # ============================================================
 
 def get_ticker_prices(
@@ -333,18 +380,24 @@ def get_ticker_prices(
     ticker: str,
 ) -> pd.DataFrame:
 
+    columns = [
+        "CD_CVM",
+        "TICKER",
+        "DATE",
+        "TECH_SEGMENT_ID",
+        "OPEN",
+        "HIGH",
+        "LOW",
+        "CLOSE",
+        *TECHNICAL_INDICATORS,
+    ]
+
     ticker_prices = (
         prices.loc[
             prices["TICKER"]
             ==
             ticker,
-            [
-                "DATE",
-                "OPEN",
-                "HIGH",
-                "LOW",
-                "CLOSE",
-            ]
+            columns,
         ]
         .copy()
         .sort_values("DATE")
@@ -378,7 +431,7 @@ def process_company(
     )
 
     # --------------------------------------------------------
-    # PREÇOS
+    # BASE TÉCNICA
     # --------------------------------------------------------
 
     ticker_prices = (
@@ -392,98 +445,26 @@ def process_company(
     # TECHNICAL
     # --------------------------------------------------------
     #
-    # Se o fundamental estiver reprovado,
-    # evaluate_ticker() devolve NOT_APPLICABLE.
+    # O motor técnico:
     #
-    # Portanto o técnico jamais recupera uma empresa.
+    # - não recalcula indicadores;
+    # - não cria score;
+    # - não cria gatilho obrigatório;
+    # - não veta fundamento aprovado;
+    # - não recupera fundamento reprovado.
     # --------------------------------------------------------
 
-    if ticker_prices.empty:
+    technical_result = evaluate_ticker(
 
-        # Ainda chamamos o Technical Engine quando
-        # fundamental estiver reprovado, pois nesse caso
-        # ele não precisa da série de preços.
+        ticker=ticker,
 
-        if not fundamental_result.fundamental_approved:
+        prices=ticker_prices,
 
-            technical_result = evaluate_ticker(
-
-                ticker=ticker,
-
-                prices=pd.DataFrame(),
-
-                fundamental_approved=False,
-            )
-
-        else:
-
-            # Empresa fundamentalmente aprovada, mas sem
-            # preços disponíveis.
-            #
-            # Importante:
-            # isso NÃO torna a empresa inelegível.
-            #
-            # Criamos o resultado técnico indisponível
-            # usando a mesma estrutura oficial.
-
-            from technical_engine import TechnicalResult
-
-            technical_result = TechnicalResult(
-
-                ticker=ticker,
-
-                technical_available=False,
-
-                technical_role=(
-                    "ENTRY_CONTEXT"
-                ),
-
-                technical_engine_version=(
-                    "FINAL_V1"
-                ),
-
-                technical_engine_mode=(
-                    "FUNDAMENTAL_FIRST_TECHNICAL_CONTEXT"
-                ),
-
-                technical_score=None,
-
-                mandatory_trigger=False,
-
-                validated_oos_trigger=False,
-
-                sma200_slope_20d=None,
-
-                atr_pct=None,
-
-                roc_60=None,
-
-                macd_hist_pct=None,
-
-                dist_sma_200=None,
-
-                bb_width=None,
-
-                dist_sma_50=None,
-
-                observations=(
-                    "SEM_DADOS_DE_PRECO"
-                ),
-            )
-
-    else:
-
-        technical_result = evaluate_ticker(
-
-            ticker=ticker,
-
-            prices=ticker_prices,
-
-            fundamental_approved=(
-                fundamental_result
-                .fundamental_approved
-            ),
-        )
+        fundamental_approved=(
+            fundamental_result
+            .fundamental_approved
+        ),
+    )
 
     # --------------------------------------------------------
     # INTEGRAÇÃO
@@ -534,8 +515,13 @@ def run_engine():
     )
 
     print(
-        "Registros de preços:",
+        "Registros técnicos:",
         len(prices_df)
+    )
+
+    print(
+        "Indicadores técnicos congelados:",
+        len(TECHNICAL_INDICATORS)
     )
 
     # --------------------------------------------------------
@@ -601,7 +587,7 @@ def run_engine():
     # 11. RANKING
     # ========================================================
     #
-    # O ranking continua FUNDAMENTAL.
+    # O ranking continua 100% FUNDAMENTAL.
     #
     # Nenhum indicador técnico participa da ordenação.
     # ========================================================
@@ -631,7 +617,10 @@ def run_engine():
         .reset_index(drop=True)
     )
 
-    # Rank apenas entre elegíveis.
+    # --------------------------------------------------------
+    # Rank somente entre elegíveis
+    # --------------------------------------------------------
+
     results_df[
         "FUNDAMENTAL_RANK"
     ] = pd.NA
@@ -668,7 +657,6 @@ def run_engine():
     # 12. TESTES DE INTEGRIDADE
     # ========================================================
 
-    # Técnico nunca pode criar score.
     technical_score_violation = (
         results_df[
             "TECHNICAL_SCORE"
@@ -677,7 +665,6 @@ def run_engine():
         .sum()
     )
 
-    # Nenhum gatilho obrigatório.
     mandatory_trigger_violation = (
         results_df[
             "MANDATORY_TRIGGER"
@@ -687,7 +674,6 @@ def run_engine():
         .sum()
     )
 
-    # Nenhum gatilho OOS validado.
     oos_trigger_violation = (
         results_df[
             "VALIDATED_OOS_TRIGGER"
@@ -697,8 +683,6 @@ def run_engine():
         .sum()
     )
 
-    # Empresa fundamentalmente reprovada
-    # jamais pode ficar elegível.
     rescue_violation = (
 
         (
@@ -718,6 +702,7 @@ def run_engine():
             ==
             True
         )
+
     ).sum()
 
     assert (
@@ -877,6 +862,12 @@ def run_engine():
         "technical_used_in_ranking":
             False,
 
+        "technical_indicator_source":
+            "CELL06B_FROZEN",
+
+        "technical_indicators_recalculated":
+            False,
+
         "architecture":
             "FUNDAMENTAL_FIRST",
     }
@@ -899,6 +890,11 @@ def run_engine():
     # ========================================================
 
     if errors:
+
+        LOGS_DIR.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
         error_file = (
             LOGS_DIR /
@@ -954,7 +950,15 @@ def run_engine():
     )
 
     print(
-        "\nTechnical Score criado: NÃO"
+        "\nFonte técnica: CELL06B CONGELADO"
+    )
+
+    print(
+        "Indicadores recalculados: NÃO"
+    )
+
+    print(
+        "Technical Score criado: NÃO"
     )
 
     print(
@@ -1019,6 +1023,10 @@ def run_engine():
 
     print(
         "✓ Technical Timing Engine executado."
+    )
+
+    print(
+        "✓ Indicadores técnicos Cell06B preservados."
     )
 
     print(
