@@ -5,15 +5,25 @@
 # Constrói:
 # data/technical_prices.csv
 #
-# a partir da base histórica REAL utilizada no estudo
-# do Technical Timing Engine.
+# FONTE CONGELADA:
+# technical_cell06b_raw_indicators_adjusted.csv
 #
-# IMPORTANTE:
-# - não cria Technical Score
-# - não cria sinal de compra/venda
-# - não cria gatilho obrigatório
-# - não refaz a pesquisa OOS
-# - apenas prepara preços para o motor técnico de produção
+# PRINCÍPIO:
+# O robô NÃO recalcula os indicadores validados no estudo.
+# Ele transporta para produção exatamente os indicadores
+# calculados no checkpoint Cell06B, após:
+#
+# - ajustes de eventos corporativos;
+# - tratamento de descontinuidades residuais;
+# - segmentação técnica;
+# - cálculo dos indicadores.
+#
+# NÃO:
+# - cria Technical Score
+# - cria sinal de compra/venda
+# - cria gatilho obrigatório
+# - refaz pesquisa OOS
+# - recupera empresa reprovada nos fundamentos
 # ============================================================
 
 from pathlib import Path
@@ -26,10 +36,7 @@ import pandas as pd
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DATA_DIR = (
-    BASE_DIR /
-    "data"
-)
+DATA_DIR = BASE_DIR / "data"
 
 DATA_DIR.mkdir(
     parents=True,
@@ -38,65 +45,71 @@ DATA_DIR.mkdir(
 
 
 # ============================================================
-# 2. BASE DO ESTUDO TÉCNICO
+# 2. CHECKPOINT TÉCNICO CONGELADO
 # ============================================================
 #
-# Diretório congelado utilizado no projeto.
+# Este é o checkpoint validado no estudo.
+#
+# Não existe seleção automática de arquivos.
+# Se este arquivo não existir, o processo deve falhar.
 # ============================================================
 
-TECHNICAL_STUDY_DIR = Path(
+SOURCE_FILE = Path(
     "/content/drive/MyDrive/"
     "b3_quant_study/"
-    "technical_timing_engine"
+    "technical_timing_engine/"
+    "technical_cell06b_raw_indicators_adjusted.csv"
 )
 
 
 # ============================================================
-# 3. POSSÍVEIS CHECKPOINTS COM PREÇOS
-# ============================================================
-#
-# O script NÃO escolhe dados artificiais.
-#
-# Ele procura arquivos reais do estudo que contenham:
-#
-# TICKER
-# DATE
-# OPEN
-# HIGH
-# LOW
-# CLOSE
-#
+# 3. SAÍDA
 # ============================================================
 
-CANDIDATE_FILES = [
+OUTPUT_FILE = DATA_DIR / "technical_prices.csv"
 
-    TECHNICAL_STUDY_DIR /
-    "technical_cell06b_segmented_prices.csv",
 
-    TECHNICAL_STUDY_DIR /
-    "technical_cell06b_prices_segmented.csv",
+# ============================================================
+# 4. COLUNAS DE PRODUÇÃO
+# ============================================================
+#
+# Os sete indicadores abaixo são exatamente os selecionados
+# pelo estudo técnico.
+#
+# TECH_SEGMENT_ID é preservado para manter a identidade
+# da segmentação utilizada no cálculo original.
+#
+# CD_CVM é preservado como identidade da companhia.
+# ============================================================
 
-    TECHNICAL_STUDY_DIR /
-    "technical_cell05b_adjusted_prices.csv",
-
-    TECHNICAL_STUDY_DIR /
-    "technical_cell05b_prices_adjusted.csv",
-
-    TECHNICAL_STUDY_DIR /
-    "technical_prices_adjusted.csv",
-
-    TECHNICAL_STUDY_DIR /
-    "technical_prices.csv",
+IDENTITY_COLUMNS = [
+    "CD_CVM",
+    "TICKER",
+    "DATE",
+    "TECH_SEGMENT_ID",
 ]
 
+PRICE_COLUMNS = [
+    "OPEN",
+    "HIGH",
+    "LOW",
+    "CLOSE",
+]
 
-# ============================================================
-# 4. SAÍDA
-# ============================================================
+TECHNICAL_INDICATORS = [
+    "SMA200_SLOPE_20D",
+    "ATR_PCT",
+    "ROC_60",
+    "MACD_HIST_PCT",
+    "DIST_SMA_200",
+    "BB_WIDTH",
+    "DIST_SMA_50",
+]
 
-OUTPUT_FILE = (
-    DATA_DIR /
-    "technical_prices.csv"
+OUTPUT_COLUMNS = (
+    IDENTITY_COLUMNS
+    + PRICE_COLUMNS
+    + TECHNICAL_INDICATORS
 )
 
 
@@ -109,432 +122,98 @@ def normalize_columns(df):
     df = df.copy()
 
     df.columns = [
-
         str(column)
         .strip()
         .upper()
 
-        for column
-        in df.columns
+        for column in df.columns
     ]
 
     return df
 
 
 # ============================================================
-# 6. LOCALIZAR COLUNA
+# 6. VALIDAR CHECKPOINT
 # ============================================================
 
-def find_column(
-    df,
-    candidates,
-    required=True,
-):
+def validate_source_file():
 
-    for candidate in candidates:
-
-        if candidate in df.columns:
-
-            return candidate
-
-    if required:
-
-        raise ValueError(
-
-            "\nColuna obrigatória não encontrada.\n\n"
-
-            f"Candidatas:\n{candidates}\n\n"
-
-            f"Colunas existentes:\n"
-            f"{list(df.columns)}"
-        )
-
-    return None
-
-
-# ============================================================
-# 7. LOCALIZAR BASE REAL
-# ============================================================
-
-def locate_price_file():
-
-    # --------------------------------------------------------
-    # Primeiro tenta nomes conhecidos.
-    # --------------------------------------------------------
-
-    for path in CANDIDATE_FILES:
-
-        if path.exists():
-
-            print(
-                "Base encontrada:"
-            )
-
-            print(
-                path
-            )
-
-            return path
-
-    # --------------------------------------------------------
-    # Se os nomes forem diferentes, procura CSVs existentes
-    # dentro da pasta técnica.
-    # --------------------------------------------------------
-
-    if not TECHNICAL_STUDY_DIR.exists():
+    if not SOURCE_FILE.exists():
 
         raise FileNotFoundError(
-
-            "\nDiretório técnico não encontrado:\n"
-
-            f"{TECHNICAL_STUDY_DIR}\n\n"
-
-            "Monte o Google Drive no Colab antes "
-            "de executar este script."
+            "\nCheckpoint técnico congelado não encontrado:\n\n"
+            f"{SOURCE_FILE}\n\n"
+            "Monte o Google Drive no Colab e confirme que o "
+            "checkpoint Cell06B está disponível.\n\n"
+            "Nenhum checkpoint alternativo será selecionado "
+            "automaticamente."
         )
 
-    csv_files = list(
-        TECHNICAL_STUDY_DIR.glob(
-            "*.csv"
-        )
-    )
-
-    print(
-        "\nArquivos CSV encontrados:",
-        len(csv_files)
-    )
-
-    # --------------------------------------------------------
-    # Procurar somente arquivos que realmente possuam
-    # estrutura OHLC.
-    # --------------------------------------------------------
-
-    valid_candidates = []
-
-    for path in csv_files:
-
-        try:
-
-            sample = pd.read_csv(
-                path,
-                nrows=5,
-                low_memory=False,
-            )
-
-            sample = normalize_columns(
-                sample
-            )
-
-            columns = set(
-                sample.columns
-            )
-
-            has_ticker = bool(
-                columns.intersection({
-                    "TICKER",
-                    "SYMBOL",
-                    "CODIGO",
-                    "CÓDIGO",
-                })
-            )
-
-            has_date = bool(
-                columns.intersection({
-                    "DATE",
-                    "DATA",
-                    "DATETIME",
-                    "TIMESTAMP",
-                })
-            )
-
-            has_open = bool(
-                columns.intersection({
-                    "OPEN",
-                    "ABERTURA",
-                })
-            )
-
-            has_high = bool(
-                columns.intersection({
-                    "HIGH",
-                    "MAX",
-                    "MAXIMA",
-                    "MÁXIMA",
-                })
-            )
-
-            has_low = bool(
-                columns.intersection({
-                    "LOW",
-                    "MIN",
-                    "MINIMA",
-                    "MÍNIMA",
-                })
-            )
-
-            has_close = bool(
-                columns.intersection({
-                    "CLOSE",
-                    "ADJ_CLOSE",
-                    "ADJCLOSE",
-                    "FECHAMENTO",
-                })
-            )
-
-            if (
-                has_ticker
-                and has_date
-                and has_open
-                and has_high
-                and has_low
-                and has_close
-            ):
-
-                valid_candidates.append(
-                    path
-                )
-
-        except Exception:
-
-            continue
-
-    if not valid_candidates:
-
-        raise FileNotFoundError(
-
-            "\nNenhum checkpoint com preços OHLC "
-            "foi localizado automaticamente.\n\n"
-
-            "Nenhum dado será inventado.\n"
-            "Precisamos usar a base real do estudo técnico."
-        )
-
-    # --------------------------------------------------------
-    # Se existir apenas uma base compatível, ela é usada.
-    # --------------------------------------------------------
-
-    if len(valid_candidates) == 1:
-
-        print(
-            "\nBase OHLC identificada:"
-        )
-
-        print(
-            valid_candidates[0]
-        )
-
-        return valid_candidates[0]
-
-    # --------------------------------------------------------
-    # Se houver várias bases, preferimos a mais avançada
-    # metodologicamente pelo nome.
-    # --------------------------------------------------------
-
-    priority_terms = [
-
-        "06b",
-        "segmented",
-        "segmentado",
-        "05b",
-        "adjusted",
-        "ajustado",
-    ]
-
-    for term in priority_terms:
-
-        matches = [
-
-            path
-
-            for path
-            in valid_candidates
-
-            if term.lower()
-            in path.name.lower()
-        ]
-
-        if len(matches) == 1:
-
-            print(
-                "\nBase selecionada:"
-            )
-
-            print(
-                matches[0]
-            )
-
-            return matches[0]
-
-    # --------------------------------------------------------
-    # Ambiguidade real:
-    # não escolhemos silenciosamente.
-    # --------------------------------------------------------
-
-    message = (
-
-        "\nForam encontradas várias bases OHLC "
-        "compatíveis.\n\n"
-
-        "Para preservar a metodologia, o script "
-        "não escolherá arbitrariamente.\n\n"
-
-        "Arquivos encontrados:\n"
-    )
-
-    for path in valid_candidates:
-
-        message += (
-            f"\n- {path.name}"
-        )
-
-    raise RuntimeError(
-        message
-    )
+    print("Checkpoint técnico congelado:")
+    print(SOURCE_FILE)
 
 
 # ============================================================
-# 8. CARREGAR BASE
+# 7. CARREGAR CHECKPOINT
 # ============================================================
 
-def load_price_data(
-    path
-):
+def load_source_data():
 
     print("\n" + "=" * 80)
-
-    print(
-        "CARREGANDO BASE TÉCNICA"
-    )
-
+    print("CARREGANDO CELL06B CONGELADO")
     print("=" * 80)
 
     df = pd.read_csv(
-        path,
+        SOURCE_FILE,
         low_memory=False,
     )
 
-    df = normalize_columns(
-        df
-    )
+    df = normalize_columns(df)
 
-    print(
-        "Linhas:",
-        len(df)
-    )
-
-    print(
-        "Colunas:",
-        len(df.columns)
-    )
+    print("Linhas:", len(df))
+    print("Colunas:", len(df.columns))
 
     return df
 
 
 # ============================================================
-# 9. PADRONIZAR COLUNAS
+# 8. VALIDAR ESTRUTURA
 # ============================================================
 
-def standardize_price_data(
-    df
-):
+def validate_required_columns(df):
 
-    ticker_col = find_column(
+    missing = [
+        column
+        for column in OUTPUT_COLUMNS
+        if column not in df.columns
+    ]
 
-        df,
+    if missing:
 
-        [
-            "TICKER",
-            "SYMBOL",
-            "CODIGO",
-            "CÓDIGO",
-        ],
+        raise ValueError(
+            "\nCheckpoint Cell06B incompatível.\n\n"
+            "Colunas obrigatórias ausentes:\n"
+            + "\n".join(
+                f"- {column}"
+                for column in missing
+            )
+        )
+
+    print("\n✓ Estrutura Cell06B validada.")
+    print(
+        "✓ 7 indicadores técnicos do estudo encontrados."
     )
 
-    date_col = find_column(
 
-        df,
+# ============================================================
+# 9. EXTRAIR CAMPOS DE PRODUÇÃO
+# ============================================================
 
-        [
-            "DATE",
-            "DATA",
-            "DATETIME",
-            "TIMESTAMP",
-        ],
-    )
-
-    open_col = find_column(
-
-        df,
-
-        [
-            "OPEN",
-            "ABERTURA",
-        ],
-    )
-
-    high_col = find_column(
-
-        df,
-
-        [
-            "HIGH",
-            "MAX",
-            "MAXIMA",
-            "MÁXIMA",
-        ],
-    )
-
-    low_col = find_column(
-
-        df,
-
-        [
-            "LOW",
-            "MIN",
-            "MINIMA",
-            "MÍNIMA",
-        ],
-    )
-
-    # --------------------------------------------------------
-    # CLOSE
-    #
-    # Preferência por preço ajustado quando ele já existir
-    # na base validada do estudo.
-    # --------------------------------------------------------
-
-    close_col = find_column(
-
-        df,
-
-        [
-            "ADJ_CLOSE",
-            "ADJCLOSE",
-            "CLOSE",
-            "FECHAMENTO",
-        ],
-    )
+def extract_production_data(df):
 
     result = df[
-        [
-            ticker_col,
-            date_col,
-            open_col,
-            high_col,
-            low_col,
-            close_col,
-        ]
+        OUTPUT_COLUMNS
     ].copy()
-
-    result.columns = [
-
-        "TICKER",
-        "DATE",
-        "OPEN",
-        "HIGH",
-        "LOW",
-        "CLOSE",
-    ]
 
     return result
 
@@ -542,10 +221,17 @@ def standardize_price_data(
 # ============================================================
 # 10. LIMPEZA MECÂNICA
 # ============================================================
+#
+# IMPORTANTE:
+#
+# Não recalculamos indicadores.
+# Não alteramos segmentação.
+# Não preenchemos NaN dos indicadores.
+#
+# NaN pode ser legítimo no início de uma janela técnica.
+# ============================================================
 
-def clean_price_data(
-    df
-):
+def clean_production_data(df):
 
     df = df.copy()
 
@@ -561,13 +247,11 @@ def clean_price_data(
         errors="coerce",
     )
 
-    numeric_columns = [
-
-        "OPEN",
-        "HIGH",
-        "LOW",
-        "CLOSE",
-    ]
+    numeric_columns = (
+        ["CD_CVM"]
+        + PRICE_COLUMNS
+        + TECHNICAL_INDICATORS
+    )
 
     for column in numeric_columns:
 
@@ -577,13 +261,17 @@ def clean_price_data(
         )
 
     # --------------------------------------------------------
-    # Remover apenas registros estruturalmente inválidos.
+    # Remover somente registros estruturalmente inválidos.
+    #
+    # Indicadores técnicos NÃO fazem parte do dropna.
     # --------------------------------------------------------
 
     df = df.dropna(
         subset=[
+            "CD_CVM",
             "TICKER",
             "DATE",
+            "TECH_SEGMENT_ID",
             "OPEN",
             "HIGH",
             "LOW",
@@ -591,40 +279,41 @@ def clean_price_data(
         ]
     )
 
-    df = df[
-        (
-            df["OPEN"] > 0
-        )
-        &
-        (
-            df["HIGH"] > 0
-        )
-        &
-        (
-            df["LOW"] > 0
-        )
-        &
-        (
-            df["CLOSE"] > 0
-        )
-    ]
+    # --------------------------------------------------------
+    # OHLC positivo
+    # --------------------------------------------------------
 
     df = df[
-        df["HIGH"]
-        >=
-        df["LOW"]
+        (df["OPEN"] > 0)
+        & (df["HIGH"] > 0)
+        & (df["LOW"] > 0)
+        & (df["CLOSE"] > 0)
     ]
+
+    # --------------------------------------------------------
+    # Integridade OHLC
+    # --------------------------------------------------------
+
+    df = df[
+        df["HIGH"] >= df["LOW"]
+    ]
+
+    # --------------------------------------------------------
+    # Ordenação
+    # --------------------------------------------------------
 
     df = (
         df
         .sort_values(
             [
+                "CD_CVM",
                 "TICKER",
                 "DATE",
             ]
         )
         .drop_duplicates(
             subset=[
+                "CD_CVM",
                 "TICKER",
                 "DATE",
             ],
@@ -645,18 +334,15 @@ def clean_price_data(
 def load_fundamental_universe():
 
     fundamental_file = (
-        DATA_DIR /
-        "fundamental_input.csv"
+        DATA_DIR
+        / "fundamental_input.csv"
     )
 
     if not fundamental_file.exists():
 
         raise FileNotFoundError(
-
-            "\nArquivo ainda não existe:\n"
-
+            "\nArquivo ainda não existe:\n\n"
             f"{fundamental_file}\n\n"
-
             "Execute primeiro "
             "build_fundamental_input.py."
         )
@@ -667,19 +353,14 @@ def load_fundamental_universe():
     )
 
     fundamental.columns = [
-
         str(column)
         .strip()
         .upper()
 
-        for column
-        in fundamental.columns
+        for column in fundamental.columns
     ]
 
-    if (
-        "TICKER"
-        not in fundamental.columns
-    ):
+    if "TICKER" not in fundamental.columns:
 
         raise ValueError(
             "fundamental_input.csv "
@@ -687,21 +368,12 @@ def load_fundamental_universe():
         )
 
     tickers = (
-
-        fundamental[
-            "TICKER"
-        ]
-
-        .astype(str)
-
-        .str.strip()
-
-        .str.upper()
-
+        fundamental["TICKER"]
         .dropna()
-
+        .astype(str)
+        .str.strip()
+        .str.upper()
         .drop_duplicates()
-
         .tolist()
     )
 
@@ -709,19 +381,23 @@ def load_fundamental_universe():
 
 
 # ============================================================
-# 12. FILTRAR PARA O UNIVERSO DE PRODUÇÃO
+# 12. FILTRAR UNIVERSO DE PRODUÇÃO
+# ============================================================
+#
+# Mantemos somente empresas pertencentes ao universo
+# fundamental recebido pelo engine.
+#
+# O técnico não cria universo próprio.
 # ============================================================
 
 def filter_production_universe(
-    prices,
-    tickers
+    technical,
+    fundamental_tickers,
 ):
 
-    filtered = prices[
-        prices[
-            "TICKER"
-        ].isin(
-            tickers
+    filtered = technical[
+        technical["TICKER"].isin(
+            fundamental_tickers
         )
     ].copy()
 
@@ -729,26 +405,51 @@ def filter_production_universe(
 
 
 # ============================================================
-# 13. AUDITORIA
+# 13. AUDITORIA DOS INDICADORES
 # ============================================================
 
-def audit_prices(
-    prices,
-    fundamental_tickers
+def audit_indicators(df):
+
+    print("\n" + "=" * 80)
+    print("AUDITORIA DOS 7 INDICADORES")
+    print("=" * 80)
+
+    for indicator in TECHNICAL_INDICATORS:
+
+        available = (
+            df[indicator]
+            .notna()
+            .sum()
+        )
+
+        missing = (
+            df[indicator]
+            .isna()
+            .sum()
+        )
+
+        print(
+            f"{indicator:<22} "
+            f"válidos={available:<8} "
+            f"NaN={missing}"
+        )
+
+
+# ============================================================
+# 14. AUDITORIA DA BASE TÉCNICA
+# ============================================================
+
+def audit_technical_data(
+    technical,
+    fundamental_tickers,
 ):
 
     print("\n" + "=" * 80)
-
-    print(
-        "AUDITORIA DA BASE TÉCNICA"
-    )
-
+    print("AUDITORIA DA BASE TÉCNICA")
     print("=" * 80)
 
-    price_tickers = set(
-        prices[
-            "TICKER"
-        ].unique()
+    technical_tickers = set(
+        technical["TICKER"].unique()
     )
 
     fundamental_set = set(
@@ -757,48 +458,47 @@ def audit_prices(
 
     missing = sorted(
         fundamental_set
-        -
-        price_tickers
+        - technical_tickers
     )
 
     print(
         "Empresas fundamentais:",
-        len(
-            fundamental_set
-        )
+        len(fundamental_set),
     )
 
     print(
-        "Empresas com preços:",
-        len(
-            price_tickers
-        )
+        "Empresas com histórico técnico:",
+        len(technical_tickers),
     )
 
     print(
-        "Empresas sem preços:",
-        len(
-            missing
-        )
+        "Empresas sem histórico técnico:",
+        len(missing),
     )
 
     print(
-        "Registros OHLC:",
-        len(
-            prices
-        )
+        "Registros técnicos:",
+        len(technical),
+    )
+
+    print(
+        "Segmentos técnicos:",
+        technical["TECH_SEGMENT_ID"].nunique(),
+    )
+
+    print(
+        "CD_CVM distintos:",
+        technical["CD_CVM"].nunique(),
     )
 
     if missing:
 
         print(
-            "\nTickers sem série técnica:"
+            "\nTickers sem histórico técnico:"
         )
 
         print(
-            ", ".join(
-                missing
-            )
+            ", ".join(missing)
         )
 
         print(
@@ -806,122 +506,213 @@ def audit_prices(
         )
 
         print(
-            "Esses ativos NÃO serão "
-            "reprovados pelo técnico."
-        )
-
-        print(
-            "O Technical Timing Engine "
-            "é apenas contexto."
+            "Ausência de contexto técnico não reprova "
+            "uma empresa fundamentalmente aprovada."
         )
 
     # --------------------------------------------------------
-    # Verificar quantidade mínima para SMA200 + slope 20d.
+    # Duplicidade
     # --------------------------------------------------------
 
-    counts = (
-        prices
-        .groupby(
-            "TICKER"
-        )
-        .size()
-    )
-
-    short_history = (
-        counts[
-            counts < 220
+    duplicates = technical.duplicated(
+        subset=[
+            "CD_CVM",
+            "TICKER",
+            "DATE",
         ]
-        .index
-        .tolist()
-    )
+    ).sum()
 
-    if short_history:
+    if duplicates:
 
-        print(
-            "\nSéries com menos de "
-            "220 observações:"
-        )
-
-        print(
-            ", ".join(
-                short_history
-            )
-        )
-
-        print(
-            "\nEssas séries podem ficar "
-            "sem contexto técnico completo."
+        raise RuntimeError(
+            "Foram encontradas duplicidades "
+            "CD_CVM/TICKER/DATE."
         )
 
     # --------------------------------------------------------
     # Integridade OHLC
     # --------------------------------------------------------
 
-    invalid_ohlc = prices[
-        prices["HIGH"]
-        <
-        prices["LOW"]
+    invalid_ohlc = technical[
+        technical["HIGH"]
+        < technical["LOW"]
     ]
 
     if not invalid_ohlc.empty:
 
         raise RuntimeError(
-            "Foram encontrados registros "
-            "OHLC estruturalmente inválidos."
+            "Foram encontrados registros OHLC "
+            "estruturalmente inválidos."
         )
 
-    return {
-        "missing_tickers":
-            missing,
+    audit_indicators(
+        technical
+    )
 
-        "short_history":
-            short_history,
+    return {
+        "missing_tickers": missing,
     }
 
 
 # ============================================================
-# 14. EXECUÇÃO
+# 15. AUDITORIA DE FIDELIDADE
+# ============================================================
+#
+# Garante que os indicadores presentes na saída são cópias
+# dos valores do checkpoint, não recálculos.
+# ============================================================
+
+def audit_fidelity(
+    source,
+    output,
+):
+
+    print("\n" + "=" * 80)
+    print("AUDITORIA DE FIDELIDADE CELL06B")
+    print("=" * 80)
+
+    source_keys = source[
+        [
+            "CD_CVM",
+            "TICKER",
+            "DATE",
+        ]
+        + TECHNICAL_INDICATORS
+    ].copy()
+
+    source_keys["TICKER"] = (
+        source_keys["TICKER"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    source_keys["DATE"] = pd.to_datetime(
+        source_keys["DATE"],
+        errors="coerce",
+    )
+
+    merged = output.merge(
+        source_keys,
+        on=[
+            "CD_CVM",
+            "TICKER",
+            "DATE",
+        ],
+        how="left",
+        suffixes=(
+            "_OUTPUT",
+            "_SOURCE",
+        ),
+        validate="one_to_one",
+    )
+
+    divergences = {}
+
+    for indicator in TECHNICAL_INDICATORS:
+
+        output_col = (
+            f"{indicator}_OUTPUT"
+        )
+
+        source_col = (
+            f"{indicator}_SOURCE"
+        )
+
+        left = pd.to_numeric(
+            merged[output_col],
+            errors="coerce",
+        )
+
+        right = pd.to_numeric(
+            merged[source_col],
+            errors="coerce",
+        )
+
+        both_nan = (
+            left.isna()
+            & right.isna()
+        )
+
+        equal = (
+            (left == right)
+            | both_nan
+        )
+
+        count = int(
+            (~equal).sum()
+        )
+
+        divergences[indicator] = count
+
+    total_divergences = sum(
+        divergences.values()
+    )
+
+    for indicator, count in divergences.items():
+
+        print(
+            f"{indicator:<22} "
+            f"divergências={count}"
+        )
+
+    if total_divergences != 0:
+
+        raise RuntimeError(
+            "\nFalha de fidelidade:\n"
+            "a saída técnica diverge dos indicadores "
+            "congelados do Cell06B."
+        )
+
+    print(
+        "\n✓ Fidelidade confirmada."
+    )
+
+    print(
+        "✓ Nenhum dos 7 indicadores foi recalculado."
+    )
+
+    print(
+        "✓ Valores idênticos ao checkpoint Cell06B."
+    )
+
+
+# ============================================================
+# 16. EXECUÇÃO
 # ============================================================
 
 def main():
 
     print("=" * 80)
-
-    print(
-        "B3 INVESTMENT ENGINE"
-    )
-
-    print(
-        "BUILD TECHNICAL PRICES"
-    )
-
+    print("B3 INVESTMENT ENGINE")
+    print("BUILD TECHNICAL DATA — CELL06B")
     print("=" * 80)
 
     # --------------------------------------------------------
-    # Base real do estudo
+    # Checkpoint congelado
     # --------------------------------------------------------
 
-    source_file = (
-        locate_price_file()
+    validate_source_file()
+
+    source = load_source_data()
+
+    validate_required_columns(
+        source
     )
 
-    raw = load_price_data(
-        source_file
-    )
-
     # --------------------------------------------------------
-    # Padronização
+    # Extração
     # --------------------------------------------------------
 
-    prices = (
-        standardize_price_data(
-            raw
+    technical = (
+        extract_production_data(
+            source
         )
     )
 
-    prices = (
-        clean_price_data(
-            prices
+    technical = (
+        clean_production_data(
+            technical
         )
     )
 
@@ -934,30 +725,35 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Produção
+    # Universo de produção
     # --------------------------------------------------------
 
-    prices = (
+    technical = (
         filter_production_universe(
-            prices,
+            technical,
             fundamental_tickers,
         )
     )
 
     # --------------------------------------------------------
-    # Auditoria
+    # Auditorias
     # --------------------------------------------------------
 
-    audit_prices(
-        prices,
+    audit_technical_data(
+        technical,
         fundamental_tickers,
+    )
+
+    audit_fidelity(
+        source,
+        technical,
     )
 
     # --------------------------------------------------------
     # Salvar
     # --------------------------------------------------------
 
-    prices.to_csv(
+    technical.to_csv(
         OUTPUT_FILE,
         index=False,
         encoding="utf-8-sig",
@@ -970,11 +766,23 @@ def main():
     )
 
     print(
-        "✓ Base derivada do estudo técnico real."
+        "✓ Fonte: Cell06B congelado."
     )
 
     print(
-        "✓ Universo fundamental preservado."
+        "✓ CD_CVM preservado."
+    )
+
+    print(
+        "✓ TECH_SEGMENT_ID preservado."
+    )
+
+    print(
+        "✓ 7 indicadores do estudo preservados."
+    )
+
+    print(
+        "✓ Nenhum indicador técnico recalculado."
     )
 
     print(
@@ -982,12 +790,11 @@ def main():
     )
 
     print(
-        "✓ Nenhum gatilho obrigatório criado."
+        "✓ Nenhum gatilho técnico obrigatório criado."
     )
 
     print(
-        "✓ Nenhuma empresa foi recuperada "
-        "ou eliminada pelo técnico."
+        "✓ Técnico permanece apenas como contexto."
     )
 
     print(
@@ -1002,7 +809,7 @@ def main():
 
 
 # ============================================================
-# 15. START
+# 17. START
 # ============================================================
 
 if __name__ == "__main__":
