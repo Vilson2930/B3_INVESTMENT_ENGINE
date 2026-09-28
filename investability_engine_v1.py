@@ -648,6 +648,7 @@ def run_investability_engine(
     reference_date="2025-12-31",
     liquidity_year=2025,
     first_year=2000,
+    regression_mode=True,
 ):
 
     quality = quality.copy()
@@ -666,7 +667,11 @@ def run_investability_engine(
             "Quality possui CD_CVM duplicado."
         )
 
-    if len(quality) != 159:
+    # A exigência de exatamente 159 empresas pertence somente
+    # ao benchmark congelado Cell19. Em produção LIVE, o universo
+    # é dinâmico e vem do Quality Engine atual, sem alterar as
+    # regras de investibilidade.
+    if regression_mode and len(quality) != 159:
 
         raise RuntimeError(
             "Benchmark Cell19 esperado: "
