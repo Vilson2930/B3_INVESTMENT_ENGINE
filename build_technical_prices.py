@@ -2,31 +2,46 @@
 # B3_INVESTMENT_ENGINE
 # build_technical_prices.py
 #
-# Constrói:
-# data/technical_prices.csv
+# CAMADA TÉCNICA LIVE
 #
-# FONTE CONGELADA:
-# technical_cell06b_raw_indicators_adjusted.csv
+# OBJETIVO:
 #
-# PRINCÍPIO:
-# O robô NÃO recalcula os indicadores validados no estudo.
-# Ele transporta para produção exatamente os indicadores
-# calculados no checkpoint Cell06B, após:
+# Em cada execução:
 #
-# - ajustes de eventos corporativos;
-# - tratamento de descontinuidades residuais;
-# - segmentação técnica;
-# - cálculo dos indicadores.
+# B3 atual
+#   ↓
+# OHLC
+#   ↓
+# neutralização mecânica de eventos corporativos
+#   ↓
+# isolamento de descontinuidades residuais
+#   ↓
+# segmentação técnica
+#   ↓
+# cálculo dos 7 indicadores congelados
+#   ↓
+# technical_prices_live.csv
 #
-# NÃO:
-# - cria Technical Score
-# - cria sinal de compra/venda
-# - cria gatilho obrigatório
-# - refaz pesquisa OOS
-# - recupera empresa reprovada nos fundamentos
+# METODOLOGIA PRESERVADA:
+#
+# - NÃO cria Technical Score
+# - NÃO cria sinal de compra/venda
+# - NÃO cria gatilho obrigatório
+# - NÃO refaz pesquisa OOS
+# - NÃO altera Quality
+# - NÃO altera Valuation
+# - NÃO participa do ranking fundamental
+# - NÃO recupera empresa reprovada
+#
+# Os dados avançam no tempo.
+# A metodologia permanece congelada.
 # ============================================================
 
 from pathlib import Path
+from datetime import datetime, timezone
+import json
+
+import numpy as np
 import pandas as pd
 
 
@@ -38,48 +53,142 @@ BASE_DIR = Path(__file__).resolve().parent
 
 DATA_DIR = BASE_DIR / "data"
 
-DATA_DIR.mkdir(
+LIVE_DIR = DATA_DIR / "live"
+
+B3_DIR = LIVE_DIR / "b3"
+
+FUNDAMENTAL_DIR = LIVE_DIR / "fundamental"
+
+PROCESSED_DIR = LIVE_DIR / "processed"
+
+TECHNICAL_DIR = LIVE_DIR / "technical"
+
+TECHNICAL_DIR.mkdir(
     parents=True,
     exist_ok=True,
 )
 
 
 # ============================================================
-# 2. CHECKPOINT TÉCNICO CONGELADO
-# ============================================================
-#
-# Este é o checkpoint validado no estudo.
-#
-# Não existe seleção automática de arquivos.
-# Se este arquivo não existir, o processo deve falhar.
+# 2. ENTRADAS
 # ============================================================
 
-SOURCE_FILE = Path(
-    "/content/drive/MyDrive/"
-    "b3_quant_study/"
-    "technical_timing_engine/"
-    "technical_cell06b_raw_indicators_adjusted.csv"
+MARKET_HISTORY_FILE = (
+    B3_DIR
+    / "market_history_live.csv"
+)
+
+SPRE_PRICES_FILE = (
+    B3_DIR
+    / "spre_prices_live.csv"
+)
+
+FUNDAMENTAL_INPUT_FILE = (
+    FUNDAMENTAL_DIR
+    / "fundamental_input_live.csv"
+)
+
+FCA_SECURITY_HISTORY_FILE = (
+    PROCESSED_DIR
+    / "fca_security_history.csv"
 )
 
 
 # ============================================================
-# 3. SAÍDA
+# 3. SAÍDAS
 # ============================================================
 
-OUTPUT_FILE = DATA_DIR / "technical_prices.csv"
+OUTPUT_FILE = (
+    TECHNICAL_DIR
+    / "technical_prices_live.csv"
+)
+
+MANIFEST_FILE = (
+    TECHNICAL_DIR
+    / "technical_prices_live_manifest.json"
+)
+
+CORPORATE_ACTION_FILE = (
+    TECHNICAL_DIR
+    / "technical_corporate_actions_live.csv"
+)
+
+RESIDUAL_FILE = (
+    TECHNICAL_DIR
+    / "technical_residual_discontinuities_live.csv"
+)
 
 
 # ============================================================
-# 4. COLUNAS DE PRODUÇÃO
+# 4. METODOLOGIA CONGELADA — CELL05B
 # ============================================================
 #
-# Os sete indicadores abaixo são exatamente os selecionados
-# pelo estudo técnico.
+# Razões mecânicas recuperadas do estudo original.
 #
-# TECH_SEGMENT_ID é preservado para manter a identidade
-# da segmentação utilizada no cálculo original.
+# MIN_ABS_MOVE = 30%
+# MAX_RELATIVE_ERROR = 2%
 #
-# CD_CVM é preservado como identidade da companhia.
+# Não utilizamos FATCOT como fator de ajuste.
+# Não reconstruímos dividendos.
+#
+# Objetivo:
+# neutralizar saltos mecânicos compatíveis com
+# desdobramentos, grupamentos e eventos equivalentes.
+# ============================================================
+
+ACTION_RATIOS = np.array(
+    [
+        0.10,
+        0.125,
+        0.20,
+        0.25,
+        1 / 3,
+        0.40,
+        0.50,
+        2 / 3,
+        0.75,
+
+        1.50,
+        2.00,
+        2.50,
+        3.00,
+        4.00,
+        5.00,
+        8.00,
+        10.00,
+    ],
+    dtype=float,
+)
+
+MIN_ABS_MOVE = 0.30
+
+MAX_RELATIVE_ERROR = 0.02
+
+
+# ============================================================
+# 5. METODOLOGIA CONGELADA — CELL06B
+# ============================================================
+
+RESIDUAL_RETURN_LIMIT = 0.80
+
+
+# ============================================================
+# 6. INDICADORES FINAIS CONGELADOS
+# ============================================================
+
+TECHNICAL_INDICATORS = [
+    "SMA200_SLOPE_20D",
+    "ATR_PCT",
+    "ROC_60",
+    "MACD_HIST_PCT",
+    "DIST_SMA_200",
+    "BB_WIDTH",
+    "DIST_SMA_50",
+]
+
+
+# ============================================================
+# 7. COLUNAS DE SAÍDA
 # ============================================================
 
 IDENTITY_COLUMNS = [
@@ -96,16 +205,6 @@ PRICE_COLUMNS = [
     "CLOSE",
 ]
 
-TECHNICAL_INDICATORS = [
-    "SMA200_SLOPE_20D",
-    "ATR_PCT",
-    "ROC_60",
-    "MACD_HIST_PCT",
-    "DIST_SMA_200",
-    "BB_WIDTH",
-    "DIST_SMA_50",
-]
-
 OUTPUT_COLUMNS = (
     IDENTITY_COLUMNS
     + PRICE_COLUMNS
@@ -114,73 +213,1402 @@ OUTPUT_COLUMNS = (
 
 
 # ============================================================
-# 5. NORMALIZAR COLUNAS
+# 8. NORMALIZAR COLUNAS
 # ============================================================
 
 def normalize_columns(df):
 
-    df = df.copy()
+    result = df.copy()
 
-    df.columns = [
+    result.columns = [
         str(column)
         .strip()
         .upper()
-
-        for column in df.columns
+        for column in result.columns
     ]
 
-    return df
+    return result
 
 
 # ============================================================
-# 6. VALIDAR CHECKPOINT
+# 9. LOCALIZAR COLUNA
 # ============================================================
 
-def validate_source_file():
+def find_column(
+    df,
+    candidates,
+    required=True,
+):
 
-    if not SOURCE_FILE.exists():
+    for candidate in candidates:
 
-        raise FileNotFoundError(
-            "\nCheckpoint técnico congelado não encontrado:\n\n"
-            f"{SOURCE_FILE}\n\n"
-            "Monte o Google Drive no Colab e confirme que o "
-            "checkpoint Cell06B está disponível.\n\n"
-            "Nenhum checkpoint alternativo será selecionado "
-            "automaticamente."
+        if candidate in df.columns:
+
+            return candidate
+
+    if required:
+
+        raise ValueError(
+            "Nenhuma coluna compatível encontrada. "
+            f"Esperadas: {candidates}"
         )
 
-    print("Checkpoint técnico congelado:")
-    print(SOURCE_FILE)
+    return None
 
 
 # ============================================================
-# 7. CARREGAR CHECKPOINT
+# 10. PADRONIZAR BASE DE PREÇOS
 # ============================================================
 
-def load_source_data():
-
-    print("\n" + "=" * 80)
-    print("CARREGANDO CELL06B CONGELADO")
-    print("=" * 80)
-
-    df = pd.read_csv(
-        SOURCE_FILE,
-        low_memory=False,
-    )
+def normalize_price_source(
+    df,
+    source_name,
+):
 
     df = normalize_columns(df)
 
-    print("Linhas:", len(df))
-    print("Colunas:", len(df.columns))
+    ticker_col = find_column(
+        df,
+        [
+            "TICKER",
+            "CODNEG",
+            "COD_NEGOCIACAO",
+            "CODIGO_NEGOCIACAO",
+            "SYMBOL",
+        ],
+    )
+
+    date_col = find_column(
+        df,
+        [
+            "DATA",
+            "DATE",
+            "DATPRE",
+            "TRADE_DATE",
+            "TRADDT",
+        ],
+    )
+
+    open_col = find_column(
+        df,
+        [
+            "OPEN",
+            "PREABE",
+            "OPEN_PRICE",
+            "PRCOPEN",
+        ],
+    )
+
+    high_col = find_column(
+        df,
+        [
+            "HIGH",
+            "PREMAX",
+            "HIGH_PRICE",
+            "PRCHIGH",
+        ],
+    )
+
+    low_col = find_column(
+        df,
+        [
+            "LOW",
+            "PREMIN",
+            "LOW_PRICE",
+            "PRCLOW",
+        ],
+    )
+
+    close_col = find_column(
+        df,
+        [
+            "CLOSE",
+            "PREULT",
+            "CLOSE_PRICE",
+            "PRCCLOSE",
+            "LAST_PRICE",
+        ],
+    )
+
+    result = df[
+        [
+            ticker_col,
+            date_col,
+            open_col,
+            high_col,
+            low_col,
+            close_col,
+        ]
+    ].copy()
+
+    result.columns = [
+        "TICKER",
+        "DATE",
+        "OPEN",
+        "HIGH",
+        "LOW",
+        "CLOSE",
+    ]
+
+    result["TICKER"] = (
+        result["TICKER"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    result["DATE"] = pd.to_datetime(
+        result["DATE"],
+        errors="coerce",
+    )
+
+    for column in PRICE_COLUMNS:
+
+        result[column] = pd.to_numeric(
+            result[column],
+            errors="coerce",
+        )
+
+    result = result.dropna(
+        subset=[
+            "TICKER",
+            "DATE",
+            "OPEN",
+            "HIGH",
+            "LOW",
+            "CLOSE",
+        ]
+    )
+
+    result = result[
+        (result["OPEN"] > 0)
+        & (result["HIGH"] > 0)
+        & (result["LOW"] > 0)
+        & (result["CLOSE"] > 0)
+    ]
+
+    result = result[
+        result["HIGH"] >= result[
+            [
+                "OPEN",
+                "LOW",
+                "CLOSE",
+            ]
+        ].max(axis=1)
+    ]
+
+    result = result[
+        result["LOW"] <= result[
+            [
+                "OPEN",
+                "HIGH",
+                "CLOSE",
+            ]
+        ].min(axis=1)
+    ]
+
+    result["SOURCE"] = source_name
+
+    return result
+
+
+# ============================================================
+# 11. CARREGAR HISTÓRICO B3
+# ============================================================
+
+def load_market_history():
+
+    if not MARKET_HISTORY_FILE.exists():
+
+        raise FileNotFoundError(
+            "\nBase histórica B3 LIVE não encontrada:\n"
+            f"{MARKET_HISTORY_FILE}\n\n"
+            "Execute primeiro build_b3_market_history.py."
+        )
+
+    print("\n" + "=" * 80)
+    print("CARREGANDO HISTÓRICO B3")
+    print("=" * 80)
+
+    raw = pd.read_csv(
+        MARKET_HISTORY_FILE,
+        low_memory=False,
+    )
+
+    history = normalize_price_source(
+        raw,
+        "B3_COTAHIST",
+    )
+
+    print(
+        "Registros históricos:",
+        len(history),
+    )
+
+    print(
+        "Primeira data:",
+        history["DATE"].min(),
+    )
+
+    print(
+        "Última data:",
+        history["DATE"].max(),
+    )
+
+    return history
+
+
+# ============================================================
+# 12. CARREGAR PREÇOS B3 DO ANO CORRENTE
+# ============================================================
+
+def load_current_year_prices():
+
+    if not SPRE_PRICES_FILE.exists():
+
+        print(
+            "\nATENÇÃO: spre_prices_live.csv "
+            "não encontrado."
+        )
+
+        return pd.DataFrame(
+            columns=[
+                "TICKER",
+                "DATE",
+                "OPEN",
+                "HIGH",
+                "LOW",
+                "CLOSE",
+                "SOURCE",
+            ]
+        )
+
+    print("\n" + "=" * 80)
+    print("CARREGANDO PREÇOS B3 DO ANO CORRENTE")
+    print("=" * 80)
+
+    raw = pd.read_csv(
+        SPRE_PRICES_FILE,
+        low_memory=False,
+    )
+
+    current = normalize_price_source(
+        raw,
+        "B3_SPRE",
+    )
+
+    print(
+        "Registros ano corrente:",
+        len(current),
+    )
+
+    if not current.empty:
+
+        print(
+            "Primeira data:",
+            current["DATE"].min(),
+        )
+
+        print(
+            "Última data:",
+            current["DATE"].max(),
+        )
+
+    return current
+
+
+# ============================================================
+# 13. CONSOLIDAR PREÇOS
+# ============================================================
+
+def build_price_history():
+
+    history = load_market_history()
+
+    current = load_current_year_prices()
+
+    frames = [
+        history,
+    ]
+
+    if not current.empty:
+
+        frames.append(
+            current
+        )
+
+    prices = pd.concat(
+        frames,
+        ignore_index=True,
+    )
+
+    # --------------------------------------------------------
+    # Se houver a mesma data nas duas fontes,
+    # SPRE prevalece sobre histórico.
+    # --------------------------------------------------------
+
+    source_priority = {
+        "B3_COTAHIST": 1,
+        "B3_SPRE": 2,
+    }
+
+    prices["SOURCE_PRIORITY"] = (
+        prices["SOURCE"]
+        .map(source_priority)
+        .fillna(0)
+    )
+
+    prices = (
+        prices
+        .sort_values(
+            [
+                "TICKER",
+                "DATE",
+                "SOURCE_PRIORITY",
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "TICKER",
+                "DATE",
+            ],
+            keep="last",
+        )
+        .drop(
+            columns=[
+                "SOURCE_PRIORITY",
+            ]
+        )
+        .sort_values(
+            [
+                "TICKER",
+                "DATE",
+            ]
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    if prices.empty:
+
+        raise RuntimeError(
+            "Nenhum preço B3 disponível."
+        )
+
+    print("\n" + "=" * 80)
+    print("HISTÓRICO B3 CONSOLIDADO")
+    print("=" * 80)
+
+    print(
+        "Registros:",
+        len(prices),
+    )
+
+    print(
+        "Tickers:",
+        prices["TICKER"].nunique(),
+    )
+
+    print(
+        "Primeira data:",
+        prices["DATE"].min(),
+    )
+
+    print(
+        "Última data:",
+        prices["DATE"].max(),
+    )
+
+    return prices
+
+
+# ============================================================
+# 14. CARREGAR UNIVERSO FUNDAMENTAL LIVE
+# ============================================================
+
+def load_fundamental_universe():
+
+    if not FUNDAMENTAL_INPUT_FILE.exists():
+
+        raise FileNotFoundError(
+            "\nFundamental LIVE não encontrado:\n"
+            f"{FUNDAMENTAL_INPUT_FILE}\n\n"
+            "Execute primeiro "
+            "build_live_fundamental_input.py."
+        )
+
+    fundamental = pd.read_csv(
+        FUNDAMENTAL_INPUT_FILE,
+        low_memory=False,
+    )
+
+    fundamental = normalize_columns(
+        fundamental
+    )
+
+    if "TICKER" not in fundamental.columns:
+
+        raise ValueError(
+            "fundamental_input_live.csv "
+            "não possui TICKER."
+        )
+
+    fundamental["TICKER"] = (
+        fundamental["TICKER"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    tickers = (
+        fundamental["TICKER"]
+        .dropna()
+        .drop_duplicates()
+        .tolist()
+    )
+
+    print("\n" + "=" * 80)
+    print("UNIVERSO FUNDAMENTAL LIVE")
+    print("=" * 80)
+
+    print(
+        "Tickers:",
+        len(tickers),
+    )
+
+    return tickers
+
+
+# ============================================================
+# 15. CARREGAR IDENTIDADE CVM ↔ TICKER
+# ============================================================
+
+def load_cvm_ticker_map():
+
+    if not FCA_SECURITY_HISTORY_FILE.exists():
+
+        raise FileNotFoundError(
+            "\nHistórico FCA não encontrado:\n"
+            f"{FCA_SECURITY_HISTORY_FILE}\n\n"
+            "Execute primeiro live_fca_engine.py."
+        )
+
+    fca = pd.read_csv(
+        FCA_SECURITY_HISTORY_FILE,
+        low_memory=False,
+    )
+
+    fca = normalize_columns(
+        fca
+    )
+
+    cd_col = find_column(
+        fca,
+        [
+            "CD_CVM",
+            "CODIGO_CVM",
+        ],
+    )
+
+    ticker_col = find_column(
+        fca,
+        [
+            "TICKER",
+            "CODIGO_NEGOCIACAO",
+            "CODIGO_NEGOCIACAO_VALOR_MOBILIARIO",
+            "COD_NEGOCIACAO",
+        ],
+    )
+
+    mapping = fca[
+        [
+            cd_col,
+            ticker_col,
+        ]
+    ].copy()
+
+    mapping.columns = [
+        "CD_CVM",
+        "TICKER",
+    ]
+
+    mapping["CD_CVM"] = pd.to_numeric(
+        mapping["CD_CVM"],
+        errors="coerce",
+    )
+
+    mapping["TICKER"] = (
+        mapping["TICKER"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    mapping = (
+        mapping
+        .dropna(
+            subset=[
+                "CD_CVM",
+                "TICKER",
+            ]
+        )
+        .drop_duplicates()
+    )
+
+    # --------------------------------------------------------
+    # Para o universo atual precisamos de relação ticker→CVM
+    # não ambígua.
+    # --------------------------------------------------------
+
+    ambiguous = (
+        mapping
+        .groupby("TICKER")["CD_CVM"]
+        .nunique()
+    )
+
+    ambiguous = set(
+        ambiguous[
+            ambiguous > 1
+        ].index
+    )
+
+    if ambiguous:
+
+        mapping = mapping[
+            ~mapping["TICKER"].isin(
+                ambiguous
+            )
+        ].copy()
+
+    mapping = (
+        mapping
+        .drop_duplicates(
+            subset=[
+                "TICKER",
+            ],
+            keep="last",
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    return mapping
+
+
+# ============================================================
+# 16. PREPARAR UNIVERSO TÉCNICO
+# ============================================================
+
+def prepare_technical_universe(
+    prices,
+    fundamental_tickers,
+    mapping,
+):
+
+    prices = prices[
+        prices["TICKER"].isin(
+            fundamental_tickers
+        )
+    ].copy()
+
+    prices = prices.merge(
+        mapping,
+        on="TICKER",
+        how="left",
+        validate="many_to_one",
+    )
+
+    prices = prices.dropna(
+        subset=[
+            "CD_CVM",
+        ]
+    )
+
+    prices["CD_CVM"] = pd.to_numeric(
+        prices["CD_CVM"],
+        errors="coerce",
+    )
+
+    # --------------------------------------------------------
+    # O universo técnico não cria empresas.
+    #
+    # Cada ticker atual constitui sua série operacional.
+    # SEGMENT_ID = 0 dentro dessa identidade ticker/CVM.
+    #
+    # Quebras mecânicas posteriores são tratadas abaixo
+    # pela Cell05B/06B.
+    # --------------------------------------------------------
+
+    prices["SEGMENT_ID"] = 0
+
+    prices = (
+        prices
+        .sort_values(
+            [
+                "CD_CVM",
+                "SEGMENT_ID",
+                "TICKER",
+                "DATE",
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "CD_CVM",
+                "TICKER",
+                "DATE",
+            ],
+            keep="last",
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    if prices.empty:
+
+        raise RuntimeError(
+            "Nenhuma empresa fundamental possui "
+            "histórico técnico B3 utilizável."
+        )
+
+    return prices
+
+
+# ============================================================
+# 17. DETECTAR RAZÃO MECÂNICA — CELL05B
+# ============================================================
+
+def detect_action_ratio(r):
+
+    if pd.isna(r) or r <= 0:
+
+        return np.nan, np.nan
+
+    if abs(r - 1.0) < MIN_ABS_MOVE:
+
+        return np.nan, np.nan
+
+    errors = (
+        np.abs(
+            r - ACTION_RATIOS
+        )
+        /
+        ACTION_RATIOS
+    )
+
+    idx = int(
+        np.argmin(
+            errors
+        )
+    )
+
+    candidate = (
+        ACTION_RATIOS[idx]
+    )
+
+    error = (
+        errors[idx]
+    )
+
+    if error <= MAX_RELATIVE_ERROR:
+
+        return candidate, error
+
+    return np.nan, np.nan
+
+
+# ============================================================
+# 18. NEUTRALIZAR EVENTOS CORPORATIVOS — CELL05B
+# ============================================================
+
+def neutralize_corporate_actions(df):
+
+    df = df.copy()
+
+    print("\n" + "=" * 80)
+    print("CELL05B — EVENTOS CORPORATIVOS")
+    print("=" * 80)
+
+    group_cols = [
+        "CD_CVM",
+        "SEGMENT_ID",
+        "TICKER",
+    ]
+
+    # --------------------------------------------------------
+    # Preservar preços originais
+    # --------------------------------------------------------
+
+    for column in PRICE_COLUMNS:
+
+        df[
+            f"RAW_{column}"
+        ] = df[column]
+
+    # --------------------------------------------------------
+    # Retorno nominal
+    # --------------------------------------------------------
+
+    df["PREV_CLOSE_RAW"] = (
+        df.groupby(
+            group_cols,
+            observed=True,
+        )["RAW_CLOSE"]
+        .shift(1)
+    )
+
+    df["RAW_PRICE_RATIO"] = (
+        df["RAW_CLOSE"]
+        /
+        df["PREV_CLOSE_RAW"]
+    )
+
+    df["RAW_RETURN_1D"] = (
+        df["RAW_PRICE_RATIO"]
+        - 1
+    )
+
+    # --------------------------------------------------------
+    # Detectar razões mecânicas
+    # --------------------------------------------------------
+
+    detected = (
+        df["RAW_PRICE_RATIO"]
+        .apply(
+            detect_action_ratio
+        )
+    )
+
+    df["DETECTED_ACTION_RATIO"] = [
+        item[0]
+        for item in detected
+    ]
+
+    df["ACTION_RELATIVE_ERROR"] = [
+        item[1]
+        for item in detected
+    ]
+
+    df["CORPORATE_ACTION_FLAG"] = (
+        df[
+            "DETECTED_ACTION_RATIO"
+        ].notna()
+    )
+
+    # --------------------------------------------------------
+    # Fator de continuidade
+    # --------------------------------------------------------
+
+    df["ACTION_MULTIPLIER"] = np.where(
+        df["CORPORATE_ACTION_FLAG"],
+        1.0
+        /
+        df["DETECTED_ACTION_RATIO"],
+        1.0,
+    )
+
+    df["PRICE_SCALE"] = (
+        df.groupby(
+            group_cols,
+            observed=True,
+        )["ACTION_MULTIPLIER"]
+        .cumprod()
+    )
+
+    # --------------------------------------------------------
+    # Ajustar OHLC
+    # --------------------------------------------------------
+
+    for column in PRICE_COLUMNS:
+
+        df[column] = (
+            df[
+                f"RAW_{column}"
+            ]
+            *
+            df["PRICE_SCALE"]
+        )
+
+    # --------------------------------------------------------
+    # Retorno da série ajustada
+    # --------------------------------------------------------
+
+    df["ADJ_RETURN_1D"] = (
+        df.groupby(
+            group_cols,
+            observed=True,
+        )["CLOSE"]
+        .pct_change(
+            fill_method=None
+        )
+    )
+
+    events = df[
+        df[
+            "CORPORATE_ACTION_FLAG"
+        ]
+    ].copy()
+
+    event_columns = [
+        "DATE",
+        "CD_CVM",
+        "TICKER",
+        "SEGMENT_ID",
+        "PREV_CLOSE_RAW",
+        "RAW_CLOSE",
+        "RAW_PRICE_RATIO",
+        "RAW_RETURN_1D",
+        "DETECTED_ACTION_RATIO",
+        "ACTION_RELATIVE_ERROR",
+        "ACTION_MULTIPLIER",
+        "PRICE_SCALE",
+        "CLOSE",
+        "ADJ_RETURN_1D",
+    ]
+
+    events[
+        event_columns
+    ].to_csv(
+        CORPORATE_ACTION_FILE,
+        index=False,
+        encoding="utf-8-sig",
+    )
+
+    print(
+        "Eventos mecânicos detectados:",
+        len(events),
+    )
+
+    print(
+        "Empresas afetadas:",
+        events["CD_CVM"].nunique()
+        if not events.empty
+        else 0,
+    )
 
     return df
 
 
 # ============================================================
-# 8. VALIDAR ESTRUTURA
+# 19. ISOLAR DESCONTINUIDADES — CELL06B
 # ============================================================
 
-def validate_required_columns(df):
+def create_technical_segments(df):
+
+    df = df.copy()
+
+    print("\n" + "=" * 80)
+    print("CELL06B — SEGMENTAÇÃO TÉCNICA")
+    print("=" * 80)
+
+    group_cols = [
+        "CD_CVM",
+        "SEGMENT_ID",
+        "TICKER",
+    ]
+
+    df["RETURN_1D_ADJUSTED"] = (
+        df.groupby(
+            group_cols,
+            observed=True,
+        )["CLOSE"]
+        .pct_change(
+            fill_method=None
+        )
+    )
+
+    df["RESIDUAL_DISCONTINUITY"] = (
+        df[
+            "RETURN_1D_ADJUSTED"
+        ]
+        .abs()
+        >
+        RESIDUAL_RETURN_LIMIT
+    )
+
+    df["RESIDUAL_BREAK_N"] = (
+        df.groupby(
+            group_cols,
+            observed=True,
+        )[
+            "RESIDUAL_DISCONTINUITY"
+        ]
+        .cumsum()
+    )
+
+    df["TECH_SEGMENT_ID"] = (
+        df["SEGMENT_ID"]
+        .astype(str)
+        +
+        "_"
+        +
+        df["RESIDUAL_BREAK_N"]
+        .astype(str)
+    )
+
+    residuals = df[
+        df[
+            "RESIDUAL_DISCONTINUITY"
+        ]
+    ].copy()
+
+    residual_columns = [
+        "DATE",
+        "CD_CVM",
+        "TICKER",
+        "SEGMENT_ID",
+        "TECH_SEGMENT_ID",
+        "RAW_CLOSE",
+        "CLOSE",
+        "RETURN_1D_ADJUSTED",
+        "RESIDUAL_DISCONTINUITY",
+    ]
+
+    residuals[
+        residual_columns
+    ].to_csv(
+        RESIDUAL_FILE,
+        index=False,
+        encoding="utf-8-sig",
+    )
+
+    print(
+        "Descontinuidades residuais:",
+        len(residuals),
+    )
+
+    print(
+        "Segmentos técnicos:",
+        df[
+            [
+                "CD_CVM",
+                "TICKER",
+                "TECH_SEGMENT_ID",
+            ]
+        ]
+        .drop_duplicates()
+        .shape[0],
+    )
+
+    return df
+
+
+# ============================================================
+# 20. CALCULAR INDICADORES — CELL06B
+# ============================================================
+
+def calculate_indicators(df):
+
+    df = df.copy()
+
+    print("\n" + "=" * 80)
+    print("CELL06B — 7 INDICADORES CONGELADOS")
+    print("=" * 80)
+
+    technical_group = [
+        "CD_CVM",
+        "SEGMENT_ID",
+        "TICKER",
+        "TECH_SEGMENT_ID",
+    ]
+
+    df = (
+        df
+        .sort_values(
+            technical_group
+            +
+            [
+                "DATE",
+            ]
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    # --------------------------------------------------------
+    # RETURN 1D
+    # --------------------------------------------------------
+
+    df["RETURN_1D"] = (
+        df.groupby(
+            technical_group,
+            observed=True,
+        )["CLOSE"]
+        .pct_change(
+            fill_method=None
+        )
+    )
+
+    # --------------------------------------------------------
+    # SMA 50
+    # --------------------------------------------------------
+
+    df["SMA_50"] = (
+        df.groupby(
+            technical_group,
+            observed=True,
+        )["CLOSE"]
+        .transform(
+            lambda s:
+            s.rolling(
+                50,
+                min_periods=50,
+            ).mean()
+        )
+    )
+
+    # --------------------------------------------------------
+    # DIST SMA 50
+    # --------------------------------------------------------
+
+    df["DIST_SMA_50"] = (
+        df["CLOSE"]
+        /
+        df["SMA_50"]
+        .replace(
+            0,
+            np.nan,
+        )
+        -
+        1
+    )
+
+    # --------------------------------------------------------
+    # SMA 200
+    # --------------------------------------------------------
+
+    df["SMA_200"] = (
+        df.groupby(
+            technical_group,
+            observed=True,
+        )["CLOSE"]
+        .transform(
+            lambda s:
+            s.rolling(
+                200,
+                min_periods=200,
+            ).mean()
+        )
+    )
+
+    # --------------------------------------------------------
+    # DIST SMA 200
+    # --------------------------------------------------------
+
+    df["DIST_SMA_200"] = (
+        df["CLOSE"]
+        /
+        df["SMA_200"]
+        .replace(
+            0,
+            np.nan,
+        )
+        -
+        1
+    )
+
+    # --------------------------------------------------------
+    # SMA200 SLOPE 20D
+    # --------------------------------------------------------
+
+    df["SMA200_SLOPE_20D"] = (
+        df.groupby(
+            technical_group,
+            observed=True,
+        )["SMA_200"]
+        .transform(
+            lambda s:
+            (
+                s
+                /
+                s.shift(20)
+                -
+                1
+            )
+        )
+    )
+
+    # --------------------------------------------------------
+    # ROC 60
+    # --------------------------------------------------------
+
+    df["ROC_60"] = (
+        df.groupby(
+            technical_group,
+            observed=True,
+        )["CLOSE"]
+        .transform(
+            lambda s:
+            (
+                s
+                /
+                s.shift(60)
+                -
+                1
+            )
+        )
+    )
+
+    # --------------------------------------------------------
+    # MACD
+    #
+    # EMA 12
+    # EMA 26
+    # Signal 9
+    # --------------------------------------------------------
+
+    df["EMA_12"] = np.nan
+
+    df["EMA_26"] = np.nan
+
+    df["MACD_RAW"] = np.nan
+
+    df["MACD_SIGNAL_RAW"] = np.nan
+
+    df["MACD_HIST_RAW"] = np.nan
+
+    grouped = df.groupby(
+        technical_group,
+        observed=True,
+        sort=False,
+    )
+
+    for _, indexes in grouped.groups.items():
+
+        indexes = list(
+            indexes
+        )
+
+        close = (
+            df.loc[
+                indexes,
+                "CLOSE",
+            ]
+            .astype(float)
+        )
+
+        ema12 = (
+            close.ewm(
+                span=12,
+                adjust=False,
+                min_periods=12,
+            )
+            .mean()
+        )
+
+        ema26 = (
+            close.ewm(
+                span=26,
+                adjust=False,
+                min_periods=26,
+            )
+            .mean()
+        )
+
+        macd = (
+            ema12
+            -
+            ema26
+        )
+
+        signal = (
+            macd.ewm(
+                span=9,
+                adjust=False,
+                min_periods=9,
+            )
+            .mean()
+        )
+
+        histogram = (
+            macd
+            -
+            signal
+        )
+
+        df.loc[
+            indexes,
+            "EMA_12",
+        ] = ema12.to_numpy()
+
+        df.loc[
+            indexes,
+            "EMA_26",
+        ] = ema26.to_numpy()
+
+        df.loc[
+            indexes,
+            "MACD_RAW",
+        ] = macd.to_numpy()
+
+        df.loc[
+            indexes,
+            "MACD_SIGNAL_RAW",
+        ] = signal.to_numpy()
+
+        df.loc[
+            indexes,
+            "MACD_HIST_RAW",
+        ] = histogram.to_numpy()
+
+    df["MACD_HIST_PCT"] = (
+        df["MACD_HIST_RAW"]
+        /
+        df["CLOSE"]
+        .replace(
+            0,
+            np.nan,
+        )
+    )
+
+    # --------------------------------------------------------
+    # BOLLINGER 20,2
+    #
+    # Cell06B corrigida:
+    # std(ddof=0)
+    # --------------------------------------------------------
+
+    df["BB_MID"] = (
+        df.groupby(
+            technical_group,
+            observed=True,
+        )["CLOSE"]
+        .transform(
+            lambda s:
+            s.rolling(
+                20,
+                min_periods=20,
+            ).mean()
+        )
+    )
+
+    df["BB_STD"] = (
+        df.groupby(
+            technical_group,
+            observed=True,
+        )["CLOSE"]
+        .transform(
+            lambda s:
+            s.rolling(
+                20,
+                min_periods=20,
+            ).std(
+                ddof=0
+            )
+        )
+    )
+
+    df["BB_UPPER"] = (
+        df["BB_MID"]
+        +
+        2
+        *
+        df["BB_STD"]
+    )
+
+    df["BB_LOWER"] = (
+        df["BB_MID"]
+        -
+        2
+        *
+        df["BB_STD"]
+    )
+
+    bb_range = (
+        df["BB_UPPER"]
+        -
+        df["BB_LOWER"]
+    )
+
+    df["BB_WIDTH"] = (
+        bb_range
+        /
+        df["BB_MID"]
+        .replace(
+            0,
+            np.nan,
+        )
+    )
+
+    # --------------------------------------------------------
+    # TRUE RANGE / ATR 14
+    # --------------------------------------------------------
+
+    df["PREV_CLOSE"] = (
+        df.groupby(
+            technical_group,
+            observed=True,
+        )["CLOSE"]
+        .shift(1)
+    )
+
+    tr1 = (
+        df["HIGH"]
+        -
+        df["LOW"]
+    )
+
+    tr2 = (
+        df["HIGH"]
+        -
+        df["PREV_CLOSE"]
+    ).abs()
+
+    tr3 = (
+        df["LOW"]
+        -
+        df["PREV_CLOSE"]
+    ).abs()
+
+    df["TRUE_RANGE"] = (
+        pd.concat(
+            [
+                tr1,
+                tr2,
+                tr3,
+            ],
+            axis=1,
+        )
+        .max(
+            axis=1
+        )
+    )
+
+    df["ATR_14"] = (
+        df.groupby(
+            technical_group,
+            observed=True,
+        )["TRUE_RANGE"]
+        .transform(
+            lambda s:
+            s.rolling(
+                14,
+                min_periods=14,
+            ).mean()
+        )
+    )
+
+    df["ATR_PCT"] = (
+        df["ATR_14"]
+        /
+        df["CLOSE"]
+        .replace(
+            0,
+            np.nan,
+        )
+    )
+
+    return df
+
+
+# ============================================================
+# 21. EXTRAIR SAÍDA DE PRODUÇÃO
+# ============================================================
+
+def extract_production_data(df):
 
     missing = [
         column
@@ -190,120 +1618,17 @@ def validate_required_columns(df):
 
     if missing:
 
-        raise ValueError(
-            "\nCheckpoint Cell06B incompatível.\n\n"
-            "Colunas obrigatórias ausentes:\n"
-            + "\n".join(
-                f"- {column}"
-                for column in missing
-            )
+        raise RuntimeError(
+            "Colunas técnicas ausentes após cálculo: "
+            f"{missing}"
         )
 
-    print("\n✓ Estrutura Cell06B validada.")
-    print(
-        "✓ 7 indicadores técnicos do estudo encontrados."
-    )
-
-
-# ============================================================
-# 9. EXTRAIR CAMPOS DE PRODUÇÃO
-# ============================================================
-
-def extract_production_data(df):
-
-    result = df[
+    output = df[
         OUTPUT_COLUMNS
     ].copy()
 
-    return result
-
-
-# ============================================================
-# 10. LIMPEZA MECÂNICA
-# ============================================================
-#
-# IMPORTANTE:
-#
-# Não recalculamos indicadores.
-# Não alteramos segmentação.
-# Não preenchemos NaN dos indicadores.
-#
-# NaN pode ser legítimo no início de uma janela técnica.
-# ============================================================
-
-def clean_production_data(df):
-
-    df = df.copy()
-
-    df["TICKER"] = (
-        df["TICKER"]
-        .astype(str)
-        .str.strip()
-        .str.upper()
-    )
-
-    df["DATE"] = pd.to_datetime(
-        df["DATE"],
-        errors="coerce",
-    )
-
-    numeric_columns = (
-        ["CD_CVM"]
-        + PRICE_COLUMNS
-        + TECHNICAL_INDICATORS
-    )
-
-    for column in numeric_columns:
-
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce",
-        )
-
-    # --------------------------------------------------------
-    # Remover somente registros estruturalmente inválidos.
-    #
-    # Indicadores técnicos NÃO fazem parte do dropna.
-    # --------------------------------------------------------
-
-    df = df.dropna(
-        subset=[
-            "CD_CVM",
-            "TICKER",
-            "DATE",
-            "TECH_SEGMENT_ID",
-            "OPEN",
-            "HIGH",
-            "LOW",
-            "CLOSE",
-        ]
-    )
-
-    # --------------------------------------------------------
-    # OHLC positivo
-    # --------------------------------------------------------
-
-    df = df[
-        (df["OPEN"] > 0)
-        & (df["HIGH"] > 0)
-        & (df["LOW"] > 0)
-        & (df["CLOSE"] > 0)
-    ]
-
-    # --------------------------------------------------------
-    # Integridade OHLC
-    # --------------------------------------------------------
-
-    df = df[
-        df["HIGH"] >= df["LOW"]
-    ]
-
-    # --------------------------------------------------------
-    # Ordenação
-    # --------------------------------------------------------
-
-    df = (
-        df
+    output = (
+        output
         .sort_values(
             [
                 "CD_CVM",
@@ -324,119 +1649,11 @@ def clean_production_data(df):
         )
     )
 
-    return df
+    return output
 
 
 # ============================================================
-# 11. CARREGAR UNIVERSO FUNDAMENTAL
-# ============================================================
-
-def load_fundamental_universe():
-
-    fundamental_file = (
-        DATA_DIR
-        / "fundamental_input.csv"
-    )
-
-    if not fundamental_file.exists():
-
-        raise FileNotFoundError(
-            "\nArquivo ainda não existe:\n\n"
-            f"{fundamental_file}\n\n"
-            "Execute primeiro "
-            "build_fundamental_input.py."
-        )
-
-    fundamental = pd.read_csv(
-        fundamental_file,
-        low_memory=False,
-    )
-
-    fundamental.columns = [
-        str(column)
-        .strip()
-        .upper()
-
-        for column in fundamental.columns
-    ]
-
-    if "TICKER" not in fundamental.columns:
-
-        raise ValueError(
-            "fundamental_input.csv "
-            "não possui TICKER."
-        )
-
-    tickers = (
-        fundamental["TICKER"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .str.upper()
-        .drop_duplicates()
-        .tolist()
-    )
-
-    return tickers
-
-
-# ============================================================
-# 12. FILTRAR UNIVERSO DE PRODUÇÃO
-# ============================================================
-#
-# Mantemos somente empresas pertencentes ao universo
-# fundamental recebido pelo engine.
-#
-# O técnico não cria universo próprio.
-# ============================================================
-
-def filter_production_universe(
-    technical,
-    fundamental_tickers,
-):
-
-    filtered = technical[
-        technical["TICKER"].isin(
-            fundamental_tickers
-        )
-    ].copy()
-
-    return filtered
-
-
-# ============================================================
-# 13. AUDITORIA DOS INDICADORES
-# ============================================================
-
-def audit_indicators(df):
-
-    print("\n" + "=" * 80)
-    print("AUDITORIA DOS 7 INDICADORES")
-    print("=" * 80)
-
-    for indicator in TECHNICAL_INDICATORS:
-
-        available = (
-            df[indicator]
-            .notna()
-            .sum()
-        )
-
-        missing = (
-            df[indicator]
-            .isna()
-            .sum()
-        )
-
-        print(
-            f"{indicator:<22} "
-            f"válidos={available:<8} "
-            f"NaN={missing}"
-        )
-
-
-# ============================================================
-# 14. AUDITORIA DA BASE TÉCNICA
+# 22. AUDITORIA
 # ============================================================
 
 def audit_technical_data(
@@ -445,20 +1662,76 @@ def audit_technical_data(
 ):
 
     print("\n" + "=" * 80)
-    print("AUDITORIA DA BASE TÉCNICA")
+    print("AUDITORIA TÉCNICA LIVE")
     print("=" * 80)
 
+    if technical.empty:
+
+        raise RuntimeError(
+            "Base técnica LIVE vazia."
+        )
+
+    duplicates = technical.duplicated(
+        subset=[
+            "CD_CVM",
+            "TICKER",
+            "DATE",
+        ]
+    ).sum()
+
+    if duplicates:
+
+        raise RuntimeError(
+            "Duplicidades CD_CVM/TICKER/DATE "
+            "na base técnica LIVE."
+        )
+
+    invalid_ohlc = technical[
+        (
+            technical["HIGH"]
+            <
+            technical[
+                [
+                    "OPEN",
+                    "LOW",
+                    "CLOSE",
+                ]
+            ].max(axis=1)
+        )
+        |
+        (
+            technical["LOW"]
+            >
+            technical[
+                [
+                    "OPEN",
+                    "HIGH",
+                    "CLOSE",
+                ]
+            ].min(axis=1)
+        )
+    ]
+
+    if not invalid_ohlc.empty:
+
+        raise RuntimeError(
+            "OHLC inválido após ajuste técnico."
+        )
+
     technical_tickers = set(
-        technical["TICKER"].unique()
+        technical["TICKER"]
+        .dropna()
+        .unique()
     )
 
     fundamental_set = set(
         fundamental_tickers
     )
 
-    missing = sorted(
+    missing_tickers = sorted(
         fundamental_set
-        - technical_tickers
+        -
+        technical_tickers
     )
 
     print(
@@ -473,251 +1746,343 @@ def audit_technical_data(
 
     print(
         "Empresas sem histórico técnico:",
-        len(missing),
+        len(missing_tickers),
     )
 
     print(
-        "Registros técnicos:",
+        "Registros:",
         len(technical),
     )
 
     print(
         "Segmentos técnicos:",
-        technical["TECH_SEGMENT_ID"].nunique(),
+        technical[
+            "TECH_SEGMENT_ID"
+        ].nunique(),
     )
 
     print(
-        "CD_CVM distintos:",
-        technical["CD_CVM"].nunique(),
+        "Primeira data:",
+        technical["DATE"].min(),
     )
 
-    if missing:
+    print(
+        "Última data:",
+        technical["DATE"].max(),
+    )
 
-        print(
-            "\nTickers sem histórico técnico:"
+    print("\n7 INDICADORES:")
+
+    for indicator in TECHNICAL_INDICATORS:
+
+        valid = int(
+            technical[
+                indicator
+            ]
+            .notna()
+            .sum()
+        )
+
+        missing = int(
+            technical[
+                indicator
+            ]
+            .isna()
+            .sum()
         )
 
         print(
-            ", ".join(missing)
+            f"{indicator:<22} "
+            f"válidos={valid:<10} "
+            f"NaN={missing}"
         )
+
+    # --------------------------------------------------------
+    # Garantir que nenhum Technical Score apareceu
+    # --------------------------------------------------------
+
+    forbidden_columns = [
+        "TECHNICAL_SCORE",
+        "BUY_SIGNAL",
+        "SELL_SIGNAL",
+        "MANDATORY_TRIGGER",
+        "VALIDATED_OOS_TRIGGER",
+    ]
+
+    violations = [
+        column
+        for column in forbidden_columns
+        if column in technical.columns
+    ]
+
+    if violations:
+
+        raise RuntimeError(
+            "Violação da arquitetura técnica. "
+            f"Colunas proibidas: {violations}"
+        )
+
+    if missing_tickers:
 
         print(
             "\nATENÇÃO:"
         )
 
         print(
-            "Ausência de contexto técnico não reprova "
-            "uma empresa fundamentalmente aprovada."
+            "Ausência de contexto técnico NÃO reprova "
+            "empresa fundamentalmente aprovada."
         )
-
-    # --------------------------------------------------------
-    # Duplicidade
-    # --------------------------------------------------------
-
-    duplicates = technical.duplicated(
-        subset=[
-            "CD_CVM",
-            "TICKER",
-            "DATE",
-        ]
-    ).sum()
-
-    if duplicates:
-
-        raise RuntimeError(
-            "Foram encontradas duplicidades "
-            "CD_CVM/TICKER/DATE."
-        )
-
-    # --------------------------------------------------------
-    # Integridade OHLC
-    # --------------------------------------------------------
-
-    invalid_ohlc = technical[
-        technical["HIGH"]
-        < technical["LOW"]
-    ]
-
-    if not invalid_ohlc.empty:
-
-        raise RuntimeError(
-            "Foram encontrados registros OHLC "
-            "estruturalmente inválidos."
-        )
-
-    audit_indicators(
-        technical
-    )
 
     return {
-        "missing_tickers": missing,
+        "missing_tickers":
+            missing_tickers,
     }
 
 
 # ============================================================
-# 15. AUDITORIA DE FIDELIDADE
-# ============================================================
-#
-# Garante que os indicadores presentes na saída são cópias
-# dos valores do checkpoint, não recálculos.
+# 23. AUDITORIA DE ATUALIDADE
 # ============================================================
 
-def audit_fidelity(
-    source,
-    output,
+def audit_freshness(
+    technical,
 ):
 
-    print("\n" + "=" * 80)
-    print("AUDITORIA DE FIDELIDADE CELL06B")
-    print("=" * 80)
-
-    source_keys = source[
-        [
-            "CD_CVM",
-            "TICKER",
-            "DATE",
-        ]
-        + TECHNICAL_INDICATORS
-    ].copy()
-
-    source_keys["TICKER"] = (
-        source_keys["TICKER"]
-        .astype(str)
-        .str.strip()
-        .str.upper()
+    latest_date = (
+        technical["DATE"]
+        .max()
     )
 
-    source_keys["DATE"] = pd.to_datetime(
-        source_keys["DATE"],
-        errors="coerce",
-    )
-
-    merged = output.merge(
-        source_keys,
-        on=[
-            "CD_CVM",
-            "TICKER",
-            "DATE",
-        ],
-        how="left",
-        suffixes=(
-            "_OUTPUT",
-            "_SOURCE",
-        ),
-        validate="one_to_one",
-    )
-
-    divergences = {}
-
-    for indicator in TECHNICAL_INDICATORS:
-
-        output_col = (
-            f"{indicator}_OUTPUT"
-        )
-
-        source_col = (
-            f"{indicator}_SOURCE"
-        )
-
-        left = pd.to_numeric(
-            merged[output_col],
-            errors="coerce",
-        )
-
-        right = pd.to_numeric(
-            merged[source_col],
-            errors="coerce",
-        )
-
-        both_nan = (
-            left.isna()
-            & right.isna()
-        )
-
-        equal = (
-            (left == right)
-            | both_nan
-        )
-
-        count = int(
-            (~equal).sum()
-        )
-
-        divergences[indicator] = count
-
-    total_divergences = sum(
-        divergences.values()
-    )
-
-    for indicator, count in divergences.items():
-
-        print(
-            f"{indicator:<22} "
-            f"divergências={count}"
-        )
-
-    if total_divergences != 0:
+    if pd.isna(
+        latest_date
+    ):
 
         raise RuntimeError(
-            "\nFalha de fidelidade:\n"
-            "a saída técnica diverge dos indicadores "
-            "congelados do Cell06B."
+            "Não foi possível determinar "
+            "a data mais recente da base técnica."
         )
 
+    now_utc = pd.Timestamp.now(
+        tz="UTC"
+    ).tz_localize(None)
+
+    age_days = (
+        now_utc.normalize()
+        -
+        pd.Timestamp(
+            latest_date
+        ).normalize()
+    ).days
+
+    print("\n" + "=" * 80)
+    print("ATUALIDADE DA BASE TÉCNICA")
+    print("=" * 80)
+
     print(
-        "\n✓ Fidelidade confirmada."
+        "Último pregão disponível:",
+        pd.Timestamp(
+            latest_date
+        ).date(),
     )
 
     print(
-        "✓ Nenhum dos 7 indicadores foi recalculado."
+        "Defasagem calendário:",
+        age_days,
+        "dias",
     )
 
-    print(
-        "✓ Valores idênticos ao checkpoint Cell06B."
-    )
+    # --------------------------------------------------------
+    # Não exigimos atualização em sábado/domingo/feriado.
+    #
+    # 10 dias é apenas proteção operacional contra uma
+    # base claramente abandonada/desatualizada.
+    # --------------------------------------------------------
+
+    if age_days > 10:
+
+        raise RuntimeError(
+            "\nBASE TÉCNICA DESATUALIZADA.\n\n"
+            f"Última data disponível: {latest_date}\n"
+            f"Defasagem: {age_days} dias.\n\n"
+            "O robô não continuará utilizando "
+            "indicadores técnicos antigos como se fossem atuais."
+        )
+
+    return latest_date
 
 
 # ============================================================
-# 16. EXECUÇÃO
+# 24. MANIFESTO
+# ============================================================
+
+def save_manifest(
+    technical,
+    audit,
+    latest_date,
+):
+
+    latest_rows = (
+        technical
+        .sort_values(
+            "DATE"
+        )
+        .groupby(
+            "TICKER",
+            as_index=False,
+        )
+        .tail(1)
+    )
+
+    latest_complete = (
+        latest_rows[
+            TECHNICAL_INDICATORS
+        ]
+        .notna()
+        .all(
+            axis=1
+        )
+        .sum()
+    )
+
+    manifest = {
+
+        "engine":
+            "B3_INVESTMENT_ENGINE",
+
+        "stage":
+            "TECHNICAL_LIVE",
+
+        "version":
+            "LIVE_CELL05B_CELL06B",
+
+        "created_at_utc":
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+
+        "market_history_source":
+            str(
+                MARKET_HISTORY_FILE
+            ),
+
+        "current_year_source":
+            str(
+                SPRE_PRICES_FILE
+            ),
+
+        "fundamental_source":
+            str(
+                FUNDAMENTAL_INPUT_FILE
+            ),
+
+        "rows":
+            int(
+                len(
+                    technical
+                )
+            ),
+
+        "companies":
+            int(
+                technical[
+                    "CD_CVM"
+                ].nunique()
+            ),
+
+        "tickers":
+            int(
+                technical[
+                    "TICKER"
+                ].nunique()
+            ),
+
+        "technical_segments":
+            int(
+                technical[
+                    "TECH_SEGMENT_ID"
+                ].nunique()
+            ),
+
+        "latest_market_date":
+            str(
+                pd.Timestamp(
+                    latest_date
+                ).date()
+            ),
+
+        "latest_complete_technical_context":
+            int(
+                latest_complete
+            ),
+
+        "missing_fundamental_tickers":
+            audit[
+                "missing_tickers"
+            ],
+
+        "corporate_action_method":
+            "MECHANICAL_DISCONTINUITY_NEUTRALIZATION",
+
+        "min_abs_move":
+            MIN_ABS_MOVE,
+
+        "max_relative_error":
+            MAX_RELATIVE_ERROR,
+
+        "residual_return_limit":
+            RESIDUAL_RETURN_LIMIT,
+
+        "technical_indicators":
+            TECHNICAL_INDICATORS,
+
+        "technical_score_created":
+            False,
+
+        "mandatory_trigger_created":
+            False,
+
+        "oos_research_reexecuted":
+            False,
+
+        "fundamental_engine_modified":
+            False,
+
+        "ranking_modified":
+            False,
+
+        "data_mode":
+            "LIVE",
+
+        "methodology_mode":
+            "FROZEN",
+    }
+
+    with open(
+        MANIFEST_FILE,
+        "w",
+        encoding="utf-8",
+    ) as file:
+
+        json.dump(
+            manifest,
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+# ============================================================
+# 25. EXECUÇÃO
 # ============================================================
 
 def main():
 
     print("=" * 80)
     print("B3 INVESTMENT ENGINE")
-    print("BUILD TECHNICAL DATA — CELL06B")
+    print("BUILD TECHNICAL PRICES — LIVE")
     print("=" * 80)
 
     # --------------------------------------------------------
-    # Checkpoint congelado
-    # --------------------------------------------------------
-
-    validate_source_file()
-
-    source = load_source_data()
-
-    validate_required_columns(
-        source
-    )
-
-    # --------------------------------------------------------
-    # Extração
-    # --------------------------------------------------------
-
-    technical = (
-        extract_production_data(
-            source
-        )
-    )
-
-    technical = (
-        clean_production_data(
-            technical
-        )
-    )
-
-    # --------------------------------------------------------
-    # Universo fundamental
+    # Universo fundamental atual
     # --------------------------------------------------------
 
     fundamental_tickers = (
@@ -725,64 +2090,189 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Universo de produção
+    # Identidade CVM
+    # --------------------------------------------------------
+
+    mapping = (
+        load_cvm_ticker_map()
+    )
+
+    # --------------------------------------------------------
+    # Preços B3
+    # --------------------------------------------------------
+
+    prices = (
+        build_price_history()
+    )
+
+    # --------------------------------------------------------
+    # Universo técnico
     # --------------------------------------------------------
 
     technical = (
-        filter_production_universe(
-            technical,
+        prepare_technical_universe(
+            prices,
+            fundamental_tickers,
+            mapping,
+        )
+    )
+
+    print("\n" + "=" * 80)
+    print("UNIVERSO TÉCNICO LIVE")
+    print("=" * 80)
+
+    print(
+        "Registros:",
+        len(technical),
+    )
+
+    print(
+        "Empresas:",
+        technical[
+            "CD_CVM"
+        ].nunique(),
+    )
+
+    print(
+        "Tickers:",
+        technical[
+            "TICKER"
+        ].nunique(),
+    )
+
+    # --------------------------------------------------------
+    # Cell05B
+    # --------------------------------------------------------
+
+    technical = (
+        neutralize_corporate_actions(
+            technical
+        )
+    )
+
+    # --------------------------------------------------------
+    # Cell06B — segmentação
+    # --------------------------------------------------------
+
+    technical = (
+        create_technical_segments(
+            technical
+        )
+    )
+
+    # --------------------------------------------------------
+    # Cell06B — indicadores
+    # --------------------------------------------------------
+
+    technical = (
+        calculate_indicators(
+            technical
+        )
+    )
+
+    # --------------------------------------------------------
+    # Produção
+    # --------------------------------------------------------
+
+    production = (
+        extract_production_data(
+            technical
+        )
+    )
+
+    # --------------------------------------------------------
+    # Auditoria
+    # --------------------------------------------------------
+
+    audit = (
+        audit_technical_data(
+            production,
             fundamental_tickers,
         )
     )
 
     # --------------------------------------------------------
-    # Auditorias
+    # Atualidade
     # --------------------------------------------------------
 
-    audit_technical_data(
-        technical,
-        fundamental_tickers,
-    )
-
-    audit_fidelity(
-        source,
-        technical,
+    latest_date = (
+        audit_freshness(
+            production
+        )
     )
 
     # --------------------------------------------------------
     # Salvar
     # --------------------------------------------------------
 
-    technical.to_csv(
+    production.to_csv(
         OUTPUT_FILE,
         index=False,
         encoding="utf-8-sig",
     )
 
+    # --------------------------------------------------------
+    # Manifesto
+    # --------------------------------------------------------
+
+    save_manifest(
+        production,
+        audit,
+        latest_date,
+    )
+
+    # --------------------------------------------------------
+    # Resultado
+    # --------------------------------------------------------
+
     print("\n" + "=" * 80)
 
     print(
-        "✓ technical_prices.csv criado."
+        "✓ technical_prices_live.csv criado."
     )
 
     print(
-        "✓ Fonte: Cell06B congelado."
+        "✓ Dados técnicos: LIVE."
     )
 
     print(
-        "✓ CD_CVM preservado."
+        "✓ Metodologia: CONGELADA."
     )
 
     print(
-        "✓ TECH_SEGMENT_ID preservado."
+        "✓ Eventos corporativos Cell05B recalculados."
     )
 
     print(
-        "✓ 7 indicadores do estudo preservados."
+        "✓ Segmentação Cell06B recalculada."
     )
 
     print(
-        "✓ Nenhum indicador técnico recalculado."
+        "✓ SMA200_SLOPE_20D recalculado."
+    )
+
+    print(
+        "✓ ATR_PCT recalculado."
+    )
+
+    print(
+        "✓ ROC_60 recalculado."
+    )
+
+    print(
+        "✓ MACD_HIST_PCT recalculado."
+    )
+
+    print(
+        "✓ DIST_SMA_200 recalculado."
+    )
+
+    print(
+        "✓ BB_WIDTH recalculado."
+    )
+
+    print(
+        "✓ DIST_SMA_50 recalculado."
     )
 
     print(
@@ -794,22 +2284,41 @@ def main():
     )
 
     print(
-        "✓ Técnico permanece apenas como contexto."
+        "✓ Ranking fundamental não foi alterado."
     )
 
     print(
-        "\nArquivo criado:"
+        "✓ Técnico permanece somente como contexto."
+    )
+
+    print(
+        "\nÚltimo pregão:",
+        pd.Timestamp(
+            latest_date
+        ).date(),
+    )
+
+    print(
+        "\nArquivo:"
     )
 
     print(
         OUTPUT_FILE
     )
 
+    print(
+        "\nManifesto:"
+    )
+
+    print(
+        MANIFEST_FILE
+    )
+
     print("=" * 80)
 
 
 # ============================================================
-# 17. START
+# 26. START
 # ============================================================
 
 if __name__ == "__main__":
