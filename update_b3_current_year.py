@@ -1,29 +1,44 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import os
 import sys
-from datetime import datetime, timezone
+import time
+import zipfile
+from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
+
+import requests
 
 
 # ============================================================
 # B3 INVESTMENT ENGINE
-# CURRENT YEAR B3 DATA V1
+# LIVE B3 CURRENT YEAR DATA V1.0
 #
 # Fonte oficial:
-# BVBG.186.01 - Simplified Price Report - Equities
+# B3 — Pesquisa por Pregão
+# BVBG.186.01 — Simplified Price Report - Equities
 #
-# Esta camada NÃO altera:
+# Padrão oficial identificado e validado:
+# SPRE{YYMMDD}.zip
+#
+# Exemplo validado:
+# SPRE260925.zip
+#
+# IMPORTANTE
+# ------------------------------------------------------------
+# Esta camada SOMENTE coleta dados oficiais da B3.
+#
+# NÃO altera:
 # - Sector Engine
 # - Quality Engine
 # - Investability Engine
 # - Valuation Engine
 # - Technical Engine
 #
-# Objetivo:
-# preparar a infraestrutura do ano corrente sem usar
-# endpoint não comprovado ou fonte não oficial.
+# Metodologia:
+# FROZEN_UNCHANGED
 # ============================================================
 
 
@@ -40,9 +55,65 @@ MANIFEST_PATH = (
     / "b3_current_year_manifest.json"
 )
 
-CURRENT_YEAR = datetime.now(
-    timezone.utc
-).year
+
+# ============================================================
+# DATA
+# ============================================================
+
+
+NOW_UTC = datetime.now(timezone.utc)
+
+CURRENT_YEAR = NOW_UTC.year
+
+TODAY = NOW_UTC.date()
+
+
+# ============================================================
+# REGRAS CONGELADAS
+# ============================================================
+
+
+HISTORY_RULE_YEARS = 10
+
+MIN_DAILY_LIQUIDITY_BRL = 6_000_000
+
+
+# ============================================================
+# B3
+# ============================================================
+
+
+B3_PAGE_URL = (
+    "https://www.b3.com.br/pt_br/"
+    "market-data-e-indices/"
+    "servicos-de-dados/"
+    "market-data/historico/"
+    "boletins-diarios/"
+    "pesquisa-por-pregao/"
+    "pesquisa-por-pregao/"
+)
+
+B3_DOWNLOAD_URL = (
+    "https://www.b3.com.br/"
+    "pesquisapregao/download"
+)
+
+
+# ============================================================
+# REDE
+# ============================================================
+
+
+CONNECT_TIMEOUT = 5
+
+READ_TIMEOUT = 30
+
+REQUEST_DELAY_SECONDS = 0.10
+
+
+# ============================================================
+# EXCEÇÕES
+# ============================================================
 
 
 class B3CurrentYearError(RuntimeError):
@@ -50,7 +121,7 @@ class B3CurrentYearError(RuntimeError):
 
 
 # ============================================================
-# DIRETÓRIOS
+# UTILITÁRIOS
 # ============================================================
 
 
@@ -62,69 +133,410 @@ def ensure_directories() -> None:
     )
 
 
+def sha256_bytes(data: bytes) -> str:
+
+    h = hashlib.sha256()
+
+    h.update(data)
+
+    return h.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+
+    h = hashlib.sha256()
+
+    with path.open("rb") as f:
+
+        for chunk in iter(
+            lambda: f.read(1024 * 1024),
+            b"",
+        ):
+
+            h.update(chunk)
+
+    return h.hexdigest()
+
+
+def atomic_write(
+    path: Path,
+    data: bytes,
+) -> None:
+
+    tmp = path.with_suffix(
+        path.suffix + ".tmp"
+    )
+
+    tmp.write_bytes(data)
+
+    tmp.replace(path)
+
+
 # ============================================================
-# CONFIGURAÇÃO
+# NOMES B3
 # ============================================================
 
 
-def get_download_endpoint() -> str | None:
+def b3_filename(
+    trading_date: date,
+) -> str:
+
+    return (
+        "SPRE"
+        + trading_date.strftime("%y%m%d")
+        + ".zip"
+    )
+
+
+def local_filename(
+    trading_date: date,
+) -> str:
+
+    return b3_filename(
+        trading_date
+    )
+
+
+# ============================================================
+# VALIDAÇÃO ZIP
+# ============================================================
+
+
+def validate_b3_zip_bytes(
+    data: bytes,
+) -> tuple[bool, list[str]]:
+
+    if len(data) <= 22:
+        return False, []
+
+    bio = BytesIO(data)
+
+    if not zipfile.is_zipfile(bio):
+        return False, []
+
+    try:
+
+        with zipfile.ZipFile(
+            bio
+        ) as z:
+
+            names = [
+                name
+                for name in z.namelist()
+                if name
+            ]
+
+            if not names:
+                return False, []
+
+            bad = z.testzip()
+
+            if bad is not None:
+                return False, names
+
+            return True, names
+
+    except zipfile.BadZipFile:
+
+        return False, []
+
+
+def validate_local_file(
+    path: Path,
+) -> tuple[bool, list[str]]:
+
+    if not path.exists():
+        return False, []
+
+    if path.stat().st_size <= 22:
+        return False, []
+
+    try:
+
+        data = path.read_bytes()
+
+        return validate_b3_zip_bytes(
+            data
+        )
+
+    except Exception:
+
+        return False, []
+
+
+# ============================================================
+# SESSÃO B3
+# ============================================================
+
+
+def create_b3_session() -> requests.Session:
+
+    session = requests.Session()
+
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/153.0.0.0 "
+                "Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,"
+                "application/xml;q=0.9,"
+                "*/*;q=0.8"
+            ),
+            "Accept-Language": (
+                "pt-BR,pt;q=0.9,en;q=0.8"
+            ),
+        }
+    )
+
+    response = session.get(
+        B3_PAGE_URL,
+        timeout=(
+            CONNECT_TIMEOUT,
+            READ_TIMEOUT,
+        ),
+    )
+
+    response.raise_for_status()
+
+    return session
+
+
+# ============================================================
+# DOWNLOAD
+# ============================================================
+
+
+def download_trading_day(
+    session: requests.Session,
+    trading_date: date,
+) -> dict:
+
+    filename = b3_filename(
+        trading_date
+    )
+
+    local_path = (
+        CURRENT_DIR
+        / local_filename(
+            trading_date
+        )
+    )
+
+    # --------------------------------------------------------
+    # Reutilização local
+    # --------------------------------------------------------
+
+    local_valid, internal_names = (
+        validate_local_file(
+            local_path
+        )
+    )
+
+    if local_valid:
+
+        return {
+            "date": trading_date.isoformat(),
+            "filename": filename,
+            "status": "LOCAL_VALID",
+            "size_bytes": int(
+                local_path.stat().st_size
+            ),
+            "sha256": sha256_file(
+                local_path
+            ),
+            "internal_files": (
+                internal_names
+            ),
+            "path": str(
+                local_path.relative_to(
+                    ROOT
+                )
+            ),
+        }
+
+    # Remove arquivo inválido anterior
+    if local_path.exists():
+
+        local_path.unlink()
+
+    params = {
+        "filelist": filename
+    }
+
+    try:
+
+        response = session.get(
+            B3_DOWNLOAD_URL,
+            params=params,
+            timeout=(
+                CONNECT_TIMEOUT,
+                READ_TIMEOUT,
+            ),
+        )
+
+    except requests.RequestException as exc:
+
+        return {
+            "date": trading_date.isoformat(),
+            "filename": filename,
+            "status": "NETWORK_ERROR",
+            "error": repr(exc),
+        }
+
+    if response.status_code != 200:
+
+        return {
+            "date": trading_date.isoformat(),
+            "filename": filename,
+            "status": (
+                f"HTTP_{response.status_code}"
+            ),
+            "size_bytes": len(
+                response.content
+            ),
+        }
+
+    data = response.content
+
+    valid, internal_names = (
+        validate_b3_zip_bytes(
+            data
+        )
+    )
+
+    # B3 devolve ZIP vazio quando não há arquivo
+    if not valid:
+
+        return {
+            "date": trading_date.isoformat(),
+            "filename": filename,
+            "status": "NOT_AVAILABLE",
+            "size_bytes": len(data),
+        }
+
+    atomic_write(
+        local_path,
+        data,
+    )
+
+    return {
+        "date": trading_date.isoformat(),
+        "filename": filename,
+        "status": "DOWNLOADED",
+        "size_bytes": len(data),
+        "sha256": sha256_bytes(
+            data
+        ),
+        "internal_files": (
+            internal_names
+        ),
+        "path": str(
+            local_path.relative_to(
+                ROOT
+            )
+        ),
+    }
+
+
+# ============================================================
+# CALENDÁRIO DE CONSULTA
+# ============================================================
+
+
+def candidate_dates() -> list[date]:
 
     """
-    Endpoint oficial somente será utilizado depois de
-    comprovado no ambiente de produção.
+    Consulta dias úteis do ano corrente.
 
-    Pode ser informado por variável de ambiente:
+    Feriados não são inventados no código.
 
-    B3_BVBG186_DOWNLOAD_URL
+    Em feriados ou dias sem pregão, a própria B3
+    retorna arquivo indisponível.
 
-    Nenhum endereço é inventado pelo código.
+    Isso evita manter calendário manual sujeito
+    a erro.
     """
 
-    value = os.getenv(
-        "B3_BVBG186_DOWNLOAD_URL",
-        "",
-    ).strip()
+    start = date(
+        CURRENT_YEAR,
+        1,
+        1,
+    )
 
-    return value or None
+    end = TODAY
+
+    result: list[date] = []
+
+    current = start
+
+    while current <= end:
+
+        # Segunda = 0
+        # Sexta = 4
+        if current.weekday() < 5:
+
+            result.append(
+                current
+            )
+
+        current += timedelta(
+            days=1
+        )
+
+    return result
 
 
 # ============================================================
-# INVENTÁRIO LOCAL
+# INVENTÁRIO
 # ============================================================
 
 
-def inventory_current_year() -> list[dict]:
+def inventory_local_files() -> list[dict]:
 
-    result = []
-
-    if not CURRENT_DIR.exists():
-        return result
+    files: list[dict] = []
 
     for path in sorted(
-        CURRENT_DIR.rglob("*")
+        CURRENT_DIR.glob(
+            "SPRE*.zip"
+        )
     ):
 
-        if not path.is_file():
+        valid, internal = (
+            validate_local_file(
+                path
+            )
+        )
+
+        if not valid:
             continue
 
-        result.append(
+        files.append(
             {
-                "file": str(
-                    path.relative_to(ROOT)
-                ),
+                "filename": path.name,
                 "size_bytes": int(
                     path.stat().st_size
                 ),
-                "modified_utc": (
-                    datetime.fromtimestamp(
-                        path.stat().st_mtime,
-                        tz=timezone.utc,
-                    ).isoformat()
+                "sha256": sha256_file(
+                    path
+                ),
+                "internal_files": (
+                    internal
+                ),
+                "path": str(
+                    path.relative_to(
+                        ROOT
+                    )
                 ),
             }
         )
 
-    return result
+    return files
 
 
 # ============================================================
@@ -135,13 +547,35 @@ def inventory_current_year() -> list[dict]:
 def write_manifest(
     *,
     status: str,
-    endpoint_configured: bool,
-    files: list[dict],
-    message: str,
+    results: list[dict],
+    valid_files: list[dict],
+    latest_available_date: str | None,
 ) -> None:
 
+    downloaded = sum(
+        x.get("status") == "DOWNLOADED"
+        for x in results
+    )
+
+    reused = sum(
+        x.get("status") == "LOCAL_VALID"
+        for x in results
+    )
+
+    unavailable = sum(
+        x.get("status") == "NOT_AVAILABLE"
+        for x in results
+    )
+
+    network_errors = sum(
+        x.get("status") == "NETWORK_ERROR"
+        for x in results
+    )
+
     manifest = {
-        "engine": "B3_INVESTMENT_ENGINE",
+        "engine": (
+            "B3_INVESTMENT_ENGINE"
+        ),
         "data_layer": (
             "LIVE_B3_CURRENT_YEAR_V1"
         ),
@@ -150,26 +584,56 @@ def write_manifest(
                 timezone.utc
             ).isoformat()
         ),
-        "reference_year": CURRENT_YEAR,
+        "reference_year": (
+            CURRENT_YEAR
+        ),
         "source": {
             "institution": "B3",
             "dataset": (
-                "BVBG.186.01 "
+                "BVBG.186.01 - "
                 "Simplified Price Report - Equities"
             ),
+            "filename_pattern": (
+                "SPRE{YYMMDD}.zip"
+            ),
             "official": True,
+            "endpoint_validated": True,
         },
         "status": status,
-        "endpoint_configured": (
-            endpoint_configured
+        "latest_available_date": (
+            latest_available_date
         ),
-        "files": files,
-        "message": message,
+        "statistics": {
+            "candidate_dates": len(
+                results
+            ),
+            "downloaded": int(
+                downloaded
+            ),
+            "reused_local": int(
+                reused
+            ),
+            "not_available": int(
+                unavailable
+            ),
+            "network_errors": int(
+                network_errors
+            ),
+            "valid_local_files": len(
+                valid_files
+            ),
+        },
+        "results": results,
+        "valid_files": valid_files,
         "methodology": {
-            "status": "FROZEN_UNCHANGED",
-            "history_rule_years": 10,
+            "status": (
+                "FROZEN_UNCHANGED"
+            ),
+            "history_rule_years": (
+                HISTORY_RULE_YEARS
+            ),
             "minimum_daily_liquidity_brl": (
-                6_000_000
+                MIN_DAILY_LIQUIDITY_BRL
             ),
             "sector_engine_altered": False,
             "quality_engine_altered": False,
@@ -203,6 +667,61 @@ def write_manifest(
 
 
 # ============================================================
+# DATA MAIS RECENTE
+# ============================================================
+
+
+def extract_date_from_filename(
+    filename: str,
+) -> date | None:
+
+    if not filename.startswith(
+        "SPRE"
+    ):
+        return None
+
+    digits = filename[
+        4:10
+    ]
+
+    if len(digits) != 6:
+        return None
+
+    try:
+
+        return datetime.strptime(
+            digits,
+            "%y%m%d",
+        ).date()
+
+    except ValueError:
+
+        return None
+
+
+def latest_local_date(
+    files: list[dict],
+) -> date | None:
+
+    dates: list[date] = []
+
+    for item in files:
+
+        d = extract_date_from_filename(
+            item["filename"]
+        )
+
+        if d is not None:
+
+            dates.append(d)
+
+    if not dates:
+        return None
+
+    return max(dates)
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -213,9 +732,17 @@ def main() -> int:
 
     print("=" * 72)
     print(
-        "B3 LIVE DATA — ANO CORRENTE"
+        "B3 LIVE DATA — ANO CORRENTE V1.0"
     )
     print("=" * 72)
+
+    print(
+        "Fonte:",
+        (
+            "B3 BVBG.186.01 — "
+            "Simplified Price Report - Equities"
+        ),
+    )
 
     print(
         "Ano:",
@@ -223,11 +750,8 @@ def main() -> int:
     )
 
     print(
-        "Fonte oficial:",
-        (
-            "BVBG.186.01 - "
-            "Simplified Price Report - Equities"
-        ),
+        "Padrão:",
+        "SPRE{YYMMDD}.zip",
     )
 
     print(
@@ -237,128 +761,213 @@ def main() -> int:
 
     print("=" * 72)
 
-    endpoint = (
-        get_download_endpoint()
+    dates = candidate_dates()
+
+    print(
+        "Dias úteis candidatos:",
+        len(dates),
     )
 
-    files = (
-        inventory_current_year()
+    print(
+        "Período:",
+        dates[0].isoformat()
+        if dates
+        else "N/A",
+        "→",
+        dates[-1].isoformat()
+        if dates
+        else "N/A",
     )
 
-    # --------------------------------------------------------
-    # Se já houver arquivos oficiais locais, registramos.
-    # --------------------------------------------------------
+    print()
 
-    if files:
+    try:
 
         print(
-            "Arquivos do ano corrente "
-            "já presentes:",
-            len(files),
+            "Criando sessão oficial B3..."
         )
 
-        write_manifest(
-            status="LOCAL_DATA_AVAILABLE",
-            endpoint_configured=(
-                endpoint is not None
-            ),
-            files=files,
-            message=(
-                "Existem arquivos locais do "
-                "BVBG.186.01 para processamento."
-            ),
+        session = (
+            create_b3_session()
         )
 
         print(
-            "Status:",
-            "LOCAL_DATA_AVAILABLE",
+            "✓ Sessão B3 criada"
+        )
+
+    except Exception as exc:
+
+        raise B3CurrentYearError(
+            "Não foi possível criar "
+            "sessão com a B3."
+        ) from exc
+
+    results: list[dict] = []
+
+    total = len(dates)
+
+    for index, trading_date in enumerate(
+        dates,
+        start=1,
+    ):
+
+        filename = b3_filename(
+            trading_date
         )
 
         print(
-            "Manifest:",
-            MANIFEST_PATH,
+            f"[{index}/{total}] "
+            f"{trading_date.isoformat()} "
+            f"— {filename}"
         )
 
-        return 0
-
-    # --------------------------------------------------------
-    # Não existe arquivo local e ainda não temos endpoint
-    # oficial comprovado.
-    #
-    # Falha segura. NÃO usa Yahoo, scraping improvisado,
-    # endpoint inventado ou dado aproximado.
-    # --------------------------------------------------------
-
-    if endpoint is None:
-
-        message = (
-            "Endpoint automático do BVBG.186.01 "
-            "ainda não foi comprovado. "
-            "Nenhum dado alternativo foi utilizado."
+        result = download_trading_day(
+            session,
+            trading_date,
         )
 
-        write_manifest(
-            status="DATA_INSUFFICIENT",
-            endpoint_configured=False,
-            files=[],
-            message=message,
+        results.append(
+            result
         )
 
-        print()
-        print(
-            "DATA_INSUFFICIENT"
+        status = result.get(
+            "status",
+            "UNKNOWN",
         )
 
-        print(
-            message
+        if status == "DOWNLOADED":
+
+            mb = (
+                result.get(
+                    "size_bytes",
+                    0,
+                )
+                / 1024
+                / 1024
+            )
+
+            print(
+                f"   ✓ BAIXADO "
+                f"({mb:.2f} MB)"
+            )
+
+        elif status == "LOCAL_VALID":
+
+            print(
+                "   ✓ LOCAL VÁLIDO"
+            )
+
+        elif status == "NOT_AVAILABLE":
+
+            print(
+                "   - SEM PREGÃO/INDISPONÍVEL"
+            )
+
+        elif status == "NETWORK_ERROR":
+
+            print(
+                "   ! ERRO DE REDE"
+            )
+
+        else:
+
+            print(
+                f"   ! {status}"
+            )
+
+        time.sleep(
+            REQUEST_DELAY_SECONDS
         )
 
-        print()
-        print(
-            "Investability executado: NÃO"
-        )
+    valid_files = (
+        inventory_local_files()
+    )
 
-        print(
-            "Quality alterado: NÃO"
-        )
+    latest = latest_local_date(
+        valid_files
+    )
 
-        print(
-            "Valuation alterado: NÃO"
-        )
+    if latest is None:
 
-        print(
-            "Technical alterado: NÃO"
-        )
+        status = "DATA_INSUFFICIENT"
 
-        print("=" * 72)
+    else:
 
-        return 2
+        status = "CURRENT_YEAR_READY"
 
-    # --------------------------------------------------------
-    # O endpoint foi configurado, mas esta V1 ainda não
-    # realiza download até validarmos seu contrato real.
-    # --------------------------------------------------------
-
-    message = (
-        "Endpoint configurado, mas o contrato "
-        "de download ainda precisa ser validado "
-        "antes da aquisição automática."
+    latest_iso = (
+        latest.isoformat()
+        if latest is not None
+        else None
     )
 
     write_manifest(
-        status="ENDPOINT_PENDING_VALIDATION",
-        endpoint_configured=True,
-        files=[],
-        message=message,
+        status=status,
+        results=results,
+        valid_files=valid_files,
+        latest_available_date=latest_iso,
     )
+
+    downloaded = sum(
+        x.get("status") == "DOWNLOADED"
+        for x in results
+    )
+
+    reused = sum(
+        x.get("status") == "LOCAL_VALID"
+        for x in results
+    )
+
+    unavailable = sum(
+        x.get("status") == "NOT_AVAILABLE"
+        for x in results
+    )
+
+    network_errors = sum(
+        x.get("status") == "NETWORK_ERROR"
+        for x in results
+    )
+
+    print()
+    print("=" * 72)
+    print(
+        "RESULTADO — B3 ANO CORRENTE"
+    )
+    print("=" * 72)
 
     print(
         "Status:",
-        "ENDPOINT_PENDING_VALIDATION",
+        status,
     )
 
     print(
-        "Nenhum download realizado."
+        "Arquivos válidos:",
+        len(valid_files),
+    )
+
+    print(
+        "Baixados agora:",
+        downloaded,
+    )
+
+    print(
+        "Reutilizados:",
+        reused,
+    )
+
+    print(
+        "Sem pregão/indisponíveis:",
+        unavailable,
+    )
+
+    print(
+        "Erros de rede:",
+        network_errors,
+    )
+
+    print(
+        "Último pregão disponível:",
+        latest_iso,
     )
 
     print(
@@ -366,7 +975,49 @@ def main() -> int:
         MANIFEST_PATH,
     )
 
-    return 2
+    print()
+    print(
+        "Sector Engine alterado: NÃO"
+    )
+
+    print(
+        "Quality Engine alterado: NÃO"
+    )
+
+    print(
+        "Investability Engine alterado: NÃO"
+    )
+
+    print(
+        "Valuation Engine alterado: NÃO"
+    )
+
+    print(
+        "Technical Engine alterado: NÃO"
+    )
+
+    print("=" * 72)
+
+    if status != "CURRENT_YEAR_READY":
+
+        print(
+            "✗ DATA_INSUFFICIENT"
+        )
+
+        return 2
+
+    if network_errors:
+
+        print(
+            "⚠ Camada disponível, mas ocorreram "
+            "erros de rede durante a atualização."
+        )
+
+    print(
+        "✓ CAMADA B3 DO ANO CORRENTE PRONTA"
+    )
+
+    return 0
 
 
 if __name__ == "__main__":
@@ -384,6 +1035,16 @@ if __name__ == "__main__":
         )
 
         sys.exit(130)
+
+    except B3CurrentYearError as exc:
+
+        print(
+            "\nDATA_INSUFFICIENT:",
+            str(exc),
+            file=sys.stderr,
+        )
+
+        sys.exit(2)
 
     except Exception as exc:
 
