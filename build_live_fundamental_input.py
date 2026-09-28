@@ -1,16 +1,24 @@
 """
 B3 INVESTMENT ENGINE
-BUILD LIVE FUNDAMENTAL INPUT — V2
+BUILD LIVE FUNDAMENTAL INPUT — V3
 
 Orquestrador fundamental de produção.
 
-Fluxo preservado:
-CVM DFP -> Identity -> FCA -> Sector -> Fundamental Base -> Indicators
--> Quality -> B3 Investability -> Valuation -> 70% Quality / 30% Valuation.
+Fluxo:
+CVM DFP
+-> Identity
+-> FCA
+-> Sector
+-> Fundamental Base
+-> Indicators
+-> Quality
+-> B3 Investability
+-> Valuation Base LIVE
+-> Valuation Engine V1
+-> Fundamental Ranking 70% Quality / 30% Valuation
 
-A metodologia V1 permanece congelada. Este módulo apenas conecta os motores
-já validados e falha de forma segura quando uma camada de dados ainda não está
-pronta.
+A metodologia V1 permanece congelada.
+Este módulo apenas conecta os motores já validados.
 """
 
 from __future__ import annotations
@@ -28,13 +36,20 @@ from live_fca_engine import run_live_fca_engine
 from sector_engine_v1 import run_sector_engine
 from cvm_fundamental_base_v1 import build_cvm_fundamental_base
 from fundamental_indicators_v1 import run_fundamental_indicators
-from quality_engine_v1 import run_quality_engine, split_quality_results
+from quality_engine_v1 import (
+    run_quality_engine,
+    split_quality_results,
+)
 from b3_investability_v1 import (
     live_config,
     run_b3_investability,
     get_investability_approved,
 )
 from valuation_engine_v1 import run_valuation_engine
+
+from build_live_valuation_base import (
+    build_live_valuation_base,
+)
 
 
 # ============================================================
@@ -51,48 +66,91 @@ PROCESSED_DIR = LIVE_DIR / "processed"
 B3_DIR = LIVE_DIR / "b3"
 
 OUTPUT_DIR = LIVE_DIR / "fundamental"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-CVM_MANIFEST = CVM_DIR / "cvm_manifest.json"
+OUTPUT_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+
+CVM_MANIFEST = (
+    CVM_DIR /
+    "cvm_manifest.json"
+)
 
 SECURITY_HISTORY_FILE = (
-    PROCESSED_DIR / "fca_security_history.csv"
+    PROCESSED_DIR /
+    "fca_security_history.csv"
 )
 
 MARKET_HISTORY_FILE = (
-    B3_DIR / "market_history_live.csv"
+    B3_DIR /
+    "market_history_live.csv"
 )
 
-VALUATION_BASE_FILE = (
-    OUTPUT_DIR / "valuation_base_live.csv"
+
+# ============================================================
+# OUTPUTS INTERMEDIÁRIOS
+# ============================================================
+
+FUNDAMENTAL_BASE_FILE = (
+    OUTPUT_DIR /
+    "fundamental_base_live.csv"
 )
 
-OUTPUT_FILE = (
-    OUTPUT_DIR / "fundamental_input_live.csv"
+FUNDAMENTAL_INDICATORS_FILE = (
+    OUTPUT_DIR /
+    "fundamental_indicators_live.csv"
 )
 
-OUTPUT_MANIFEST = (
-    OUTPUT_DIR / "fundamental_live_manifest.json"
+COMPANY_SUMMARY_FILE = (
+    OUTPUT_DIR /
+    "fundamental_company_summary_live.csv"
 )
 
 QUALITY_FILE = (
-    OUTPUT_DIR / "quality_live.csv"
+    OUTPUT_DIR /
+    "quality_live.csv"
 )
 
 QUALITY_APPROVED_FILE = (
-    OUTPUT_DIR / "quality_approved_live.csv"
+    OUTPUT_DIR /
+    "quality_approved_live.csv"
 )
 
 INVESTABILITY_FILE = (
-    OUTPUT_DIR / "investability_live.csv"
+    OUTPUT_DIR /
+    "investability_live.csv"
 )
 
 INVESTABILITY_APPROVED_FILE = (
-    OUTPUT_DIR / "investability_approved_live.csv"
+    OUTPUT_DIR /
+    "investability_approved_live.csv"
+)
+
+VALUATION_BASE_FILE = (
+    OUTPUT_DIR /
+    "valuation_base_live.csv"
 )
 
 VALUATION_FILE = (
-    OUTPUT_DIR / "valuation_live.csv"
+    OUTPUT_DIR /
+    "valuation_live.csv"
+)
+
+
+# ============================================================
+# OUTPUT FINAL
+# ============================================================
+
+OUTPUT_FILE = (
+    OUTPUT_DIR /
+    "fundamental_input_live.csv"
+)
+
+OUTPUT_MANIFEST = (
+    OUTPUT_DIR /
+    "fundamental_live_manifest.json"
 )
 
 
@@ -100,13 +158,17 @@ VALUATION_FILE = (
 # METODOLOGIA CONGELADA
 # ============================================================
 
-METHODOLOGY_VERSION = "B3_FUNDAMENTAL_V1"
+METHODOLOGY_VERSION = (
+    "B3_FUNDAMENTAL_V1"
+)
 
 QUALITY_GATE = 60.0
 
 MIN_HISTORY_YEARS = 10.0
 
-MIN_AVG_DAILY_LIQUIDITY_BRL = 6_000_000.0
+MIN_AVG_DAILY_LIQUIDITY_BRL = (
+    6_000_000.0
+)
 
 QUALITY_WEIGHT = 0.70
 
@@ -117,11 +179,15 @@ VALUATION_WEIGHT = 0.30
 # EXCEPTIONS
 # ============================================================
 
-class LiveFundamentalError(RuntimeError):
+class LiveFundamentalError(
+    RuntimeError
+):
     pass
 
 
-class DataInsufficientError(LiveFundamentalError):
+class DataInsufficientError(
+    LiveFundamentalError
+):
     pass
 
 
@@ -136,13 +202,20 @@ class MethodologyIntegrityError(
 # ============================================================
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(
+        timezone.utc
+    )
 
 
 def write_json_atomic(
     data: dict,
     path: Path,
 ) -> None:
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     tmp = path.with_suffix(
         path.suffix + ".tmp"
@@ -165,6 +238,11 @@ def write_csv_atomic(
     df: pd.DataFrame,
     path: Path,
 ) -> None:
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     tmp = path.with_suffix(
         path.suffix + ".tmp"
@@ -206,9 +284,12 @@ def audit_frozen_methodology() -> None:
         "WEIGHT_SUM":
             abs(
                 QUALITY_WEIGHT
-                + VALUATION_WEIGHT
-                - 1.0
-            ) <= 1e-12,
+                +
+                VALUATION_WEIGHT
+                -
+                1.0
+            )
+            <= 1e-12,
     }
 
     failed = [
@@ -222,12 +303,15 @@ def audit_frozen_methodology() -> None:
 
         raise MethodologyIntegrityError(
             "Metodologia V1 alterada: "
-            + ", ".join(failed)
+            +
+            ", ".join(
+                failed
+            )
         )
 
 
 # ============================================================
-# AUDITORIA DOS DADOS CVM
+# AUDITORIA CVM
 # ============================================================
 
 def audit_cvm_data() -> None:
@@ -240,7 +324,8 @@ def audit_cvm_data() -> None:
         )
 
     if not (
-        CVM_DIR / "cad_cia_aberta.csv"
+        CVM_DIR /
+        "cad_cia_aberta.csv"
     ).exists():
 
         raise DataInsufficientError(
@@ -249,24 +334,28 @@ def audit_cvm_data() -> None:
         )
 
     if not (
-        CVM_DIR / "dfp"
+        CVM_DIR /
+        "dfp"
     ).exists():
 
         raise DataInsufficientError(
-            "Diretório DFP não encontrado."
+            "Diretório DFP "
+            "não encontrado."
         )
 
     if not (
-        CVM_DIR / "fca"
+        CVM_DIR /
+        "fca"
     ).exists():
 
         raise DataInsufficientError(
-            "Diretório FCA não encontrado."
+            "Diretório FCA "
+            "não encontrado."
         )
 
 
 # ============================================================
-# B3 MARKET HISTORY
+# MARKET HISTORY B3
 # ============================================================
 
 def _load_market_history() -> pd.DataFrame:
@@ -274,12 +363,9 @@ def _load_market_history() -> pd.DataFrame:
     if not MARKET_HISTORY_FILE.exists():
 
         raise DataInsufficientError(
-            "Camada B3 normalizada ainda "
+            "Camada B3 normalizada "
             "não encontrada: "
-            f"{MARKET_HISTORY_FILE}. "
-            "É necessário gerar TICKER, "
-            "DATA e VOLTOT com COTAHIST "
-            "histórico + B3 ano corrente."
+            f"{MARKET_HISTORY_FILE}"
         )
 
     market = pd.read_csv(
@@ -294,8 +380,10 @@ def _load_market_history() -> pd.DataFrame:
     }
 
     missing = (
-        required
-        - set(market.columns)
+        required -
+        set(
+            market.columns
+        )
     )
 
     if missing:
@@ -303,23 +391,38 @@ def _load_market_history() -> pd.DataFrame:
         raise DataInsufficientError(
             "market_history_live.csv "
             "sem colunas: "
-            + ", ".join(
-                sorted(missing)
+            +
+            ", ".join(
+                sorted(
+                    missing
+                )
             )
         )
 
-    market["DATA"] = pd.to_datetime(
-        market["DATA"],
+    market[
+        "DATA"
+    ] = pd.to_datetime(
+        market[
+            "DATA"
+        ],
         errors="coerce",
     )
 
-    market["VOLTOT"] = pd.to_numeric(
-        market["VOLTOT"],
+    market[
+        "VOLTOT"
+    ] = pd.to_numeric(
+        market[
+            "VOLTOT"
+        ],
         errors="coerce",
     )
 
-    market["TICKER"] = (
-        market["TICKER"]
+    market[
+        "TICKER"
+    ] = (
+        market[
+            "TICKER"
+        ]
         .astype(str)
         .str.strip()
         .str.upper()
@@ -344,7 +447,7 @@ def _load_market_history() -> pd.DataFrame:
 
 
 # ============================================================
-# FCA — HISTÓRICO DE TICKERS
+# HISTÓRICO FCA DE TICKERS
 # ============================================================
 
 def _load_ticker_history() -> pd.DataFrame:
@@ -396,7 +499,8 @@ def _load_ticker_history() -> pd.DataFrame:
 
     if (
         cd_col is None
-        or ticker_col is None
+        or
+        ticker_col is None
     ):
 
         raise DataInsufficientError(
@@ -416,13 +520,21 @@ def _load_ticker_history() -> pd.DataFrame:
         "TICKER",
     ]
 
-    out["CD_CVM"] = pd.to_numeric(
-        out["CD_CVM"],
+    out[
+        "CD_CVM"
+    ] = pd.to_numeric(
+        out[
+            "CD_CVM"
+        ],
         errors="coerce",
     )
 
-    out["TICKER"] = (
-        out["TICKER"]
+    out[
+        "TICKER"
+    ] = (
+        out[
+            "TICKER"
+        ]
         .astype(str)
         .str.strip()
         .str.upper()
@@ -451,19 +563,28 @@ def _load_valuation_base() -> pd.DataFrame:
     if not VALUATION_BASE_FILE.exists():
 
         raise DataInsufficientError(
-            "Base live de Valuation "
-            "ainda não encontrada: "
-            f"{VALUATION_BASE_FILE}."
+            "Valuation Base LIVE "
+            "não encontrada após construção: "
+            f"{VALUATION_BASE_FILE}"
         )
 
-    return pd.read_csv(
+    valuation_base = pd.read_csv(
         VALUATION_BASE_FILE,
         low_memory=False,
     )
 
+    if valuation_base.empty:
+
+        raise DataInsufficientError(
+            "valuation_base_live.csv "
+            "está vazio."
+        )
+
+    return valuation_base
+
 
 # ============================================================
-# VALIDAÇÃO DA SAÍDA
+# VALIDAÇÃO DA SAÍDA FINAL
 # ============================================================
 
 def validate_live_output(
@@ -471,21 +592,18 @@ def validate_live_output(
 ) -> None:
 
     required = {
-
         "TICKER",
-
         "QUALITY_SCORE",
-
         "HISTORY_YEARS",
-
         "AVG_DAILY_LIQUIDITY_BRL",
-
         "VALUATION_SCORE",
     }
 
     missing = (
-        required
-        - set(df.columns)
+        required -
+        set(
+            df.columns
+        )
     )
 
     if missing:
@@ -493,20 +611,29 @@ def validate_live_output(
         raise DataInsufficientError(
             "Saída live sem colunas "
             "obrigatórias: "
-            + ", ".join(
-                sorted(missing)
+            +
+            ", ".join(
+                sorted(
+                    missing
+                )
             )
         )
 
     if df.empty:
 
         raise DataInsufficientError(
-            "Saída fundamental live vazia."
+            "Saída fundamental "
+            "live vazia."
         )
 
     if (
-        df["TICKER"].isna().any()
-        or df["TICKER"].duplicated().any()
+        df[
+            "TICKER"
+        ].isna().any()
+        or
+        df[
+            "TICKER"
+        ].duplicated().any()
     ):
 
         raise MethodologyIntegrityError(
@@ -515,16 +642,20 @@ def validate_live_output(
         )
 
     q = pd.to_numeric(
-        df["QUALITY_SCORE"],
+        df[
+            "QUALITY_SCORE"
+        ],
         errors="coerce",
     )
 
     h = pd.to_numeric(
-        df["HISTORY_YEARS"],
+        df[
+            "HISTORY_YEARS"
+        ],
         errors="coerce",
     )
 
-    l = pd.to_numeric(
+    liquidity = pd.to_numeric(
         df[
             "AVG_DAILY_LIQUIDITY_BRL"
         ],
@@ -533,8 +664,10 @@ def validate_live_output(
 
     if (
         q.isna().any()
-        or h.isna().any()
-        or l.isna().any()
+        or
+        h.isna().any()
+        or
+        liquidity.isna().any()
     ):
 
         raise DataInsufficientError(
@@ -543,14 +676,19 @@ def validate_live_output(
         )
 
     if (
-        (q < QUALITY_GATE).any()
-        or (
-            h
-            < MIN_HISTORY_YEARS
+        (
+            q <
+            QUALITY_GATE
         ).any()
-        or (
-            l
-            < MIN_AVG_DAILY_LIQUIDITY_BRL
+        or
+        (
+            h <
+            MIN_HISTORY_YEARS
+        ).any()
+        or
+        (
+            liquidity <
+            MIN_AVG_DAILY_LIQUIDITY_BRL
         ).any()
     ):
 
@@ -561,7 +699,7 @@ def validate_live_output(
 
 
 # ============================================================
-# SCORE FUNDAMENTAL 70 / 30
+# FUNDAMENTAL SCORE 70 / 30
 # ============================================================
 
 def calculate_fundamental_score(
@@ -570,25 +708,34 @@ def calculate_fundamental_score(
 
     out = df.copy()
 
-    out["QUALITY_SCORE"] = (
-        pd.to_numeric(
-            out["QUALITY_SCORE"],
-            errors="coerce",
-        )
+    out[
+        "QUALITY_SCORE"
+    ] = pd.to_numeric(
+        out[
+            "QUALITY_SCORE"
+        ],
+        errors="coerce",
     )
 
-    out["VALUATION_SCORE"] = (
-        pd.to_numeric(
-            out["VALUATION_SCORE"],
-            errors="coerce",
-        )
+    out[
+        "VALUATION_SCORE"
+    ] = pd.to_numeric(
+        out[
+            "VALUATION_SCORE"
+        ],
+        errors="coerce",
     )
 
-    out["FUNDAMENTAL_SCORE"] = pd.NA
+    out[
+        "FUNDAMENTAL_SCORE"
+    ] = pd.NA
 
     mask = (
-        out["QUALITY_SCORE"].notna()
-        & out[
+        out[
+            "QUALITY_SCORE"
+        ].notna()
+        &
+        out[
             "VALUATION_SCORE"
         ].notna()
     )
@@ -599,7 +746,8 @@ def calculate_fundamental_score(
     ] = (
 
         QUALITY_WEIGHT
-        * out.loc[
+        *
+        out.loc[
             mask,
             "QUALITY_SCORE",
         ]
@@ -607,7 +755,8 @@ def calculate_fundamental_score(
         +
 
         VALUATION_WEIGHT
-        * out.loc[
+        *
+        out.loc[
             mask,
             "VALUATION_SCORE",
         ]
@@ -616,7 +765,9 @@ def calculate_fundamental_score(
     out[
         "FUNDAMENTAL_SCORE"
     ] = pd.to_numeric(
-        out["FUNDAMENTAL_SCORE"],
+        out[
+            "FUNDAMENTAL_SCORE"
+        ],
         errors="coerce",
     )
 
@@ -624,19 +775,23 @@ def calculate_fundamental_score(
 
 
 # ============================================================
-# PIPELINE FUNDAMENTAL LIVE
+# PIPELINE LIVE
 # ============================================================
 
 def build_live_fundamental_input() -> pd.DataFrame:
 
-    print("=" * 72)
+    print(
+        "=" * 72
+    )
 
     print(
         "B3 INVESTMENT ENGINE — "
-        "LIVE FUNDAMENTAL V2"
+        "LIVE FUNDAMENTAL V3"
     )
 
-    print("=" * 72)
+    print(
+        "=" * 72
+    )
 
     # --------------------------------------------------------
     # AUDITORIAS
@@ -646,25 +801,38 @@ def build_live_fundamental_input() -> pd.DataFrame:
 
     audit_cvm_data()
 
+
     # --------------------------------------------------------
     # 1. DFP
     # --------------------------------------------------------
 
     print(
-        "[1/8] Carregando "
-        "DFP oficial..."
+        "[1/9] "
+        "Carregando DFP oficial..."
     )
 
-    statements = load_dfp_history()
+    statements = (
+        load_dfp_history()
+    )
 
-    dre = statements["DRE"]
+    if "DRE" not in statements:
+
+        raise DataInsufficientError(
+            "DFP carregado sem DRE."
+        )
+
+    dre = statements[
+        "DRE"
+    ]
+
 
     # --------------------------------------------------------
     # 2. IDENTITY + FCA
     # --------------------------------------------------------
 
     print(
-        "[2/8] Identidade + FCA..."
+        "[2/9] "
+        "Identity + FCA..."
     )
 
     identity = (
@@ -681,12 +849,14 @@ def build_live_fundamental_input() -> pd.DataFrame:
         )
     )
 
+
     # --------------------------------------------------------
     # 3. SECTOR
     # --------------------------------------------------------
 
     print(
-        "[3/8] Sector Engine V1..."
+        "[3/9] "
+        "Sector Engine V1..."
     )
 
     architecture = (
@@ -696,47 +866,79 @@ def build_live_fundamental_input() -> pd.DataFrame:
         )
     )
 
+
     # --------------------------------------------------------
     # 4. FUNDAMENTAL BASE + INDICATORS
     # --------------------------------------------------------
 
     print(
-        "[4/8] Fundamental Base "
-        "+ Indicators V1..."
+        "[4/9] "
+        "Fundamental Base + "
+        "Indicators V1..."
     )
 
-    (
+    fundamental_base, coverage = (
+        build_cvm_fundamental_base(
+            architecture,
+            statements,
+        )
+    )
+
+    if fundamental_base.empty:
+
+        raise DataInsufficientError(
+            "Fundamental Base LIVE vazia."
+        )
+
+    # Salva a base necessária para
+    # o Valuation Base LIVE.
+    write_csv_atomic(
         fundamental_base,
-        _coverage,
-    ) = build_cvm_fundamental_base(
-        architecture,
-        statements,
+        FUNDAMENTAL_BASE_FILE,
     )
 
-    (
-        _raw,
-        company_summary,
-    ) = run_fundamental_indicators(
-        fundamental_base
+    raw_indicators, company_summary = (
+        run_fundamental_indicators(
+            fundamental_base
+        )
     )
+
+    if company_summary.empty:
+
+        raise DataInsufficientError(
+            "Company Summary LIVE vazia."
+        )
+
+    write_csv_atomic(
+        raw_indicators,
+        FUNDAMENTAL_INDICATORS_FILE,
+    )
+
+    write_csv_atomic(
+        company_summary,
+        COMPANY_SUMMARY_FILE,
+    )
+
 
     # --------------------------------------------------------
     # 5. QUALITY
     # --------------------------------------------------------
 
     print(
-        "[5/8] Quality Engine V1..."
+        "[5/9] "
+        "Quality Engine V1..."
     )
 
-    quality = run_quality_engine(
-        company_summary
+    quality = (
+        run_quality_engine(
+            company_summary
+        )
     )
 
-    (
-        quality_approved,
-        _blocked,
-    ) = split_quality_results(
-        quality
+    quality_approved, blocked = (
+        split_quality_results(
+            quality
+        )
     )
 
     write_csv_atomic(
@@ -749,12 +951,21 @@ def build_live_fundamental_input() -> pd.DataFrame:
         QUALITY_APPROVED_FILE,
     )
 
+    if quality_approved.empty:
+
+        raise DataInsufficientError(
+            "Nenhuma empresa aprovada "
+            "pelo Quality Engine."
+        )
+
+
     # --------------------------------------------------------
     # 6. INVESTABILITY
     # --------------------------------------------------------
 
     print(
-        "[6/8] B3 Investability V1..."
+        "[6/9] "
+        "B3 Investability V1..."
     )
 
     ticker_history = (
@@ -766,11 +977,15 @@ def build_live_fundamental_input() -> pd.DataFrame:
     )
 
     latest_date = pd.to_datetime(
-        market_history["DATA"],
+        market_history[
+            "DATA"
+        ],
         errors="coerce",
     ).max()
 
-    if pd.isna(latest_date):
+    if pd.isna(
+        latest_date
+    ):
 
         raise DataInsufficientError(
             "Não foi possível determinar "
@@ -809,17 +1024,56 @@ def build_live_fundamental_input() -> pd.DataFrame:
         INVESTABILITY_APPROVED_FILE,
     )
 
+    if investability_approved.empty:
+
+        raise DataInsufficientError(
+            "Nenhuma empresa aprovada "
+            "no Investability V1."
+        )
+
+
     # --------------------------------------------------------
-    # 7. VALUATION
+    # 7. VALUATION BASE LIVE
     # --------------------------------------------------------
 
     print(
-        "[7/8] Valuation Engine V1..."
+        "[7/9] "
+        "Construindo "
+        "Valuation Base LIVE..."
     )
+
+    build_live_valuation_base()
 
     valuation_base = (
         _load_valuation_base()
     )
+
+
+    # --------------------------------------------------------
+    # GARANTIR MESMO UNIVERSO INVESTABILITY
+    # --------------------------------------------------------
+
+    if (
+        "CD_CVM"
+        not in
+        investability_approved.columns
+    ):
+
+        raise DataInsufficientError(
+            "Investability aprovado "
+            "sem CD_CVM."
+        )
+
+    if (
+        "CD_CVM"
+        not in
+        valuation_base.columns
+    ):
+
+        raise DataInsufficientError(
+            "Valuation Base LIVE "
+            "sem CD_CVM."
+        )
 
     approved_ids = set(
         pd.to_numeric(
@@ -827,13 +1081,17 @@ def build_live_fundamental_input() -> pd.DataFrame:
                 "CD_CVM"
             ],
             errors="coerce",
-        ).dropna()
+        )
+        .dropna()
+        .tolist()
     )
 
     valuation_base[
         "CD_CVM"
     ] = pd.to_numeric(
-        valuation_base["CD_CVM"],
+        valuation_base[
+            "CD_CVM"
+        ],
         errors="coerce",
     )
 
@@ -848,6 +1106,16 @@ def build_live_fundamental_input() -> pd.DataFrame:
         .copy()
     )
 
+
+    # --------------------------------------------------------
+    # 8. VALUATION ENGINE
+    # --------------------------------------------------------
+
+    print(
+        "[8/9] "
+        "Valuation Engine V1..."
+    )
+
     valuation = (
         run_valuation_engine(
             valuation_base
@@ -859,13 +1127,26 @@ def build_live_fundamental_input() -> pd.DataFrame:
         VALUATION_FILE,
     )
 
+    if (
+        "VALUATION_SCORE"
+        not in
+        valuation.columns
+    ):
+
+        raise DataInsufficientError(
+            "Valuation Engine V1 "
+            "não retornou VALUATION_SCORE."
+        )
+
+
     # --------------------------------------------------------
-    # 8. INTEGRAÇÃO 70 / 30
+    # 9. INTEGRAÇÃO 70 / 30
     # --------------------------------------------------------
 
     print(
-        "[8/8] Integração "
-        "fundamental 70/30..."
+        "[9/9] "
+        "Integração fundamental "
+        "70/30..."
     )
 
     val_cols = [
@@ -876,7 +1157,9 @@ def build_live_fundamental_input() -> pd.DataFrame:
     merged = (
         investability_approved
         .merge(
-            valuation[val_cols],
+            valuation[
+                val_cols
+            ],
             on="CD_CVM",
             how="left",
             validate="one_to_one",
@@ -889,7 +1172,8 @@ def build_live_fundamental_input() -> pd.DataFrame:
 
     if (
         ticker_col
-        not in merged.columns
+        not in
+        merged.columns
     ):
 
         raise DataInsufficientError(
@@ -925,6 +1209,17 @@ def build_live_fundamental_input() -> pd.DataFrame:
                     "VALUATION_SCORE"
                 ],
         }
+    )
+
+    final[
+        "TICKER"
+    ] = (
+        final[
+            "TICKER"
+        ]
+        .astype(str)
+        .str.strip()
+        .str.upper()
     )
 
     final = (
@@ -1012,8 +1307,24 @@ def build_manifest(
                 False,
         },
 
+        "pipeline": [
+            "CVM_DFP",
+            "IDENTITY",
+            "FCA",
+            "SECTOR",
+            "FUNDAMENTAL_BASE",
+            "INDICATORS",
+            "QUALITY",
+            "INVESTABILITY",
+            "VALUATION_BASE_LIVE",
+            "VALUATION_ENGINE_V1",
+            "FUNDAMENTAL_70_30",
+        ],
+
         "output_file":
-            str(OUTPUT_FILE),
+            str(
+                OUTPUT_FILE
+            ),
     }
 
 
@@ -1044,11 +1355,13 @@ def main() -> int:
 
         print(
             "\n"
-            + "=" * 72
+            +
+            "=" * 72
         )
 
         print(
-            "LIVE FUNDAMENTAL CONCLUÍDO"
+            "LIVE FUNDAMENTAL "
+            "CONCLUÍDO"
         )
 
         print(
@@ -1079,6 +1392,17 @@ def main() -> int:
         )
 
         print(
+            "Com Fundamental Score:",
+            int(
+                df[
+                    "FUNDAMENTAL_SCORE"
+                ]
+                .notna()
+                .sum()
+            ),
+        )
+
+        print(
             "Arquivo:",
             OUTPUT_FILE,
         )
@@ -1088,6 +1412,7 @@ def main() -> int:
         )
 
         return 0
+
 
     except DataInsufficientError as exc:
 
@@ -1100,12 +1425,13 @@ def main() -> int:
         )
 
         print(
-            "\nDATA_INSUFFICIENT: "
+            f"\nDATA_INSUFFICIENT: "
             f"{exc}",
             file=sys.stderr,
         )
 
         return 3
+
 
     except MethodologyIntegrityError as exc:
 
@@ -1125,6 +1451,7 @@ def main() -> int:
 
         return 4
 
+
     except Exception as exc:
 
         write_json_atomic(
@@ -1136,8 +1463,7 @@ def main() -> int:
         )
 
         print(
-            "\nERROR: "
-            f"{exc}",
+            f"\nERROR: {exc}",
             file=sys.stderr,
         )
 
@@ -1145,6 +1471,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+
     raise SystemExit(
         main()
     )
