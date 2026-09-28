@@ -77,7 +77,67 @@ jobs:
 
 
       # ======================================================
-      # 6. TESTAR FUNDAMENTAL ENGINE
+      # 6. ATUALIZAR DADOS OFICIAIS CVM
+      # ======================================================
+
+      - name: Update official CVM data
+        run: |
+          echo "=========================================="
+          echo "ATUALIZAÇÃO OFICIAL CVM"
+          echo "=========================================="
+
+          python update_cvm_data.py
+
+          echo "=========================================="
+          echo "DADOS CVM ATUALIZADOS"
+          echo "=========================================="
+
+
+      # ======================================================
+      # 7. AUDITAR DADOS CVM ATUALIZADOS
+      # ======================================================
+
+      - name: Audit updated CVM data
+        run: |
+          echo "=========================================="
+          echo "AUDITORIA DA CAMADA CVM"
+          echo "=========================================="
+
+          if [ ! -f "data/live/cvm/cad_cia_aberta.csv" ]; then
+            echo "ERRO:"
+            echo "Cadastro CVM atualizado não encontrado."
+            exit 1
+          fi
+
+          if [ ! -f "data/live/cvm/cvm_manifest.json" ]; then
+            echo "ERRO:"
+            echo "Manifesto CVM não encontrado."
+            exit 1
+          fi
+
+          echo "Cadastro CVM: OK"
+          echo "Manifesto CVM: OK"
+
+          echo ""
+          echo "Arquivos DFP:"
+          find data/live/cvm/dfp -maxdepth 1 -type f -print | sort
+
+          echo ""
+          echo "Arquivos ITR:"
+          find data/live/cvm/itr -maxdepth 1 -type f -print | sort
+
+          echo ""
+          echo "Manifesto:"
+          cat data/live/cvm/cvm_manifest.json
+
+          echo ""
+          echo "=========================================="
+          echo "CAMADA CVM VALIDADA"
+          echo "=========================================="
+
+
+      # ======================================================
+      # 8. TESTAR FUNDAMENTAL ENGINE
       # ======================================================
 
       - name: Test Fundamental Engine
@@ -86,7 +146,7 @@ jobs:
 
 
       # ======================================================
-      # 7. TESTAR TECHNICAL TIMING ENGINE
+      # 9. TESTAR TECHNICAL TIMING ENGINE
       # ======================================================
 
       - name: Test Technical Timing Engine
@@ -95,7 +155,7 @@ jobs:
 
 
       # ======================================================
-      # 8. TESTAR INTEGRATION ENGINE
+      # 10. TESTAR INTEGRATION ENGINE
       # ======================================================
 
       - name: Test Integration Engine
@@ -104,7 +164,7 @@ jobs:
 
 
       # ======================================================
-      # 9. VERIFICAR DADOS DE ENTRADA
+      # 11. VERIFICAR DADOS DE ENTRADA
       # ======================================================
 
       - name: Check input data
@@ -129,7 +189,7 @@ jobs:
 
 
       # ======================================================
-      # 10. EXECUTAR O MOTOR
+      # 12. EXECUTAR O MOTOR
       # ======================================================
 
       - name: Run B3 Investment Engine
@@ -138,7 +198,7 @@ jobs:
 
 
       # ======================================================
-      # 11. GERAR RELATÓRIO FINAL
+      # 13. GERAR RELATÓRIO FINAL
       # ======================================================
 
       - name: Generate final report
@@ -147,7 +207,7 @@ jobs:
 
 
       # ======================================================
-      # 12. MOSTRAR ARQUIVOS GERADOS
+      # 14. MOSTRAR ARQUIVOS GERADOS
       # ======================================================
 
       - name: Show generated files
@@ -157,21 +217,33 @@ jobs:
           echo "ARQUIVOS GERADOS"
           echo "=========================================="
 
+          if [ -d "data/live/cvm" ]; then
+            echo ""
+            echo "CVM:"
+            find data/live/cvm -maxdepth 2 -type f -print
+          fi
+
           if [ -d "final_report" ]; then
+            echo ""
+            echo "FINAL REPORT:"
             find final_report -maxdepth 2 -type f -print
           fi
 
           if [ -d "checkpoints" ]; then
+            echo ""
+            echo "CHECKPOINTS:"
             find checkpoints -maxdepth 2 -type f -print
           fi
 
           if [ -d "logs" ]; then
+            echo ""
+            echo "LOGS:"
             find logs -maxdepth 2 -type f -print
           fi
 
 
       # ======================================================
-      # 13. SALVAR RELATÓRIO COMO ARTIFACT
+      # 15. SALVAR RELATÓRIO COMO ARTIFACT
       # ======================================================
 
       - name: Upload final report
@@ -186,7 +258,22 @@ jobs:
 
 
       # ======================================================
-      # 14. SALVAR CHECKPOINTS
+      # 16. SALVAR MANIFESTO CVM
+      # ======================================================
+
+      - name: Upload CVM manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: B3_INVESTMENT_ENGINE_CVM_MANIFEST
+          path: |
+            data/live/cvm/cvm_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+
+      # ======================================================
+      # 17. SALVAR CHECKPOINTS
       # ======================================================
 
       - name: Upload checkpoints
@@ -201,7 +288,7 @@ jobs:
 
 
       # ======================================================
-      # 15. SALVAR LOGS SE HOUVER FALHA
+      # 18. SALVAR LOGS SE HOUVER FALHA
       # ======================================================
 
       - name: Upload logs on failure
