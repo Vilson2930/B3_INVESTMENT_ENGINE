@@ -1064,18 +1064,19 @@ def run_quality_engine(
         axis=1,
     )
 
+    empresa["N_HARD_BLOCKS"] = (
+        hard_blocks.apply(len)
+    )
+
+    empresa["HARD_BLOCK"] = (
+        empresa["N_HARD_BLOCKS"] > 0
+    )
+
     empresa[
         "HARD_BLOCK_MOTIVOS"
     ] = hard_blocks.apply(
         lambda motivos:
-        "|".join(motivos)
-    )
-
-    empresa["HARD_BLOCK"] = (
-        hard_blocks.apply(
-            lambda motivos:
-            len(motivos) > 0
-        )
+        " | ".join(motivos)
     )
 
     # ========================================================
@@ -1097,7 +1098,7 @@ def run_quality_engine(
     # QUALITY GATE
     # ========================================================
 
-    empresa["QUALITY_APPROVED"] = (
+    empresa["APROVADA_QUALITY"] = (
         (~empresa["HARD_BLOCK"])
         &
         (
@@ -1112,7 +1113,7 @@ def run_quality_engine(
 
     if (
         empresa.loc[
-            empresa["QUALITY_APPROVED"],
+            empresa["APROVADA_QUALITY"],
             "HARD_BLOCK",
         ].any()
     ):
@@ -1123,7 +1124,7 @@ def run_quality_engine(
 
     if (
         empresa.loc[
-            empresa["QUALITY_APPROVED"],
+            empresa["APROVADA_QUALITY"],
             "QUALITY_SCORE",
         ]
         < QUALITY_GATE
@@ -1153,7 +1154,7 @@ def split_quality_results(
     approved = (
         quality_result[
             quality_result[
-                "QUALITY_APPROVED"
+                "APROVADA_QUALITY"
             ]
         ]
         .copy()
