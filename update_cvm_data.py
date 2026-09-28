@@ -33,6 +33,7 @@ CVM_DIR = LIVE_DIR / "cvm"
 
 DFP_DIR = CVM_DIR / "dfp"
 ITR_DIR = CVM_DIR / "itr"
+FCA_DIR = CVM_DIR / "fca"
 
 MANIFEST_PATH = CVM_DIR / "cvm_manifest.json"
 
@@ -54,6 +55,10 @@ DFP_BASE_URL = (
 
 ITR_BASE_URL = (
     f"{CVM_BASE}/dados/CIA_ABERTA/DOC/ITR/DADOS"
+)
+
+FCA_BASE_URL = (
+    f"{CVM_BASE}/dados/CIA_ABERTA/DOC/FCA/DADOS"
 )
 
 
@@ -97,6 +102,7 @@ def ensure_directories() -> None:
         CVM_DIR,
         DFP_DIR,
         ITR_DIR,
+        FCA_DIR,
     ):
         directory.mkdir(
             parents=True,
@@ -349,6 +355,13 @@ def itr_url(year: int) -> str:
     )
 
 
+def fca_url(year: int) -> str:
+    return (
+        f"{FCA_BASE_URL}/"
+        f"fca_cia_aberta_{year}.zip"
+    )
+
+
 def update_year_file(
     document_type: str,
     year: int,
@@ -376,6 +389,15 @@ def update_year_file(
         destination = (
             ITR_DIR /
             f"itr_cia_aberta_{year}.zip"
+        )
+
+    elif document_type == "FCA":
+
+        url = fca_url(year)
+
+        destination = (
+            FCA_DIR /
+            f"fca_cia_aberta_{year}.zip"
         )
 
     else:
@@ -423,6 +445,7 @@ def write_manifest(
     registry: dict,
     dfp_results: list[dict],
     itr_results: list[dict],
+    fca_results: list[dict],
 ) -> dict:
 
     available_dfp = [
@@ -434,6 +457,12 @@ def write_manifest(
     available_itr = [
         x["year"]
         for x in itr_results
+        if x.get("available")
+    ]
+
+    available_fca = [
+        x["year"]
+        for x in fca_results
         if x.get("available")
     ]
 
@@ -478,6 +507,18 @@ def write_manifest(
                 else None
             ),
             "files": itr_results,
+        },
+
+        "fca": {
+            "first_requested_year": (
+                FIRST_STUDY_YEAR
+            ),
+            "latest_available_year": (
+                max(available_fca)
+                if available_fca
+                else None
+            ),
+            "files": fca_results,
         },
     }
 
@@ -638,6 +679,31 @@ def main() -> int:
             )
 
     # --------------------------------------------------------
+    # FCA
+    # --------------------------------------------------------
+
+    print("\n" + "-" * 80)
+    print("FCA")
+    print("-" * 80)
+
+    fca_results = []
+
+    for year in years:
+
+        result = update_year_file(
+            "FCA",
+            year,
+        )
+
+        fca_results.append(result)
+
+        if not result["available"]:
+            print(
+                f"- FCA {year}: "
+                "não disponível"
+            )
+
+    # --------------------------------------------------------
     # Manifesto
     # --------------------------------------------------------
 
@@ -645,6 +711,7 @@ def main() -> int:
         registry,
         dfp_results,
         itr_results,
+        fca_results,
     )
 
     # --------------------------------------------------------
@@ -669,6 +736,12 @@ def main() -> int:
     print(
         "Último ITR disponível:",
         manifest["itr"]
+        ["latest_available_year"],
+    )
+
+    print(
+        "Último FCA disponível:",
+        manifest["fca"]
         ["latest_available_year"],
     )
 
