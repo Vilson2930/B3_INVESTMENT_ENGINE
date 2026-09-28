@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -15,21 +16,22 @@ from pathlib import Path
 
 # ============================================================
 # B3 INVESTMENT ENGINE
-# LIVE B3 DATA UPDATER V1
+# LIVE B3 HISTORICAL DATA UPDATER V1.1
 #
 # Responsabilidade:
-# - adquirir COTAHIST oficial da B3
-# - preservar arquivos históricos
-# - atualizar anos disponíveis
+# - baixar COTAHIST oficial B3
+# - manter histórico necessário à regra de 10 anos
 # - validar ZIP/TXT
-# - gerar manifesto
+# - evitar esperas longas em endpoints indisponíveis
+# - gerar manifesto de dados
 #
-# NÃO:
-# - calcula Quality
-# - calcula Valuation
-# - calcula ranking
-# - altera Investability Engine V1
-# - altera metodologia congelada
+# NÃO ALTERA:
+# - Sector Engine
+# - Quality Engine
+# - Investability Engine
+# - Valuation Engine
+# - Technical Engine
+# - metodologia congelada
 # ============================================================
 
 
@@ -43,33 +45,25 @@ COTAHIST_DIR = B3_DIR / "cotahist"
 MANIFEST_PATH = B3_DIR / "b3_manifest.json"
 
 
-# ------------------------------------------------------------
+# ============================================================
 # CONFIGURAÇÃO
-# ------------------------------------------------------------
+# ============================================================
 
-FIRST_HISTORY_YEAR = 2000
+CURRENT_YEAR = datetime.now(timezone.utc).year
 
-CURRENT_YEAR = datetime.now(
-    timezone.utc
-).year
+# Precisamos de pelo menos 10 anos de histórico.
+# Mantemos margem adicional de 1 ano.
+FIRST_HISTORY_YEAR = CURRENT_YEAR - 11
+
+DOWNLOAD_TIMEOUT = 12
 
 
-# O COTAHIST anual segue o padrão histórico oficial da B3.
-#
-# Mantemos mais de uma URL candidata porque a B3 já alterou
-# a infraestrutura de distribuição ao longo do tempo.
-#
-# Nenhuma URL alternativa muda a metodologia. Ela muda apenas
-# a localização física do mesmo arquivo oficial.
+# Endpoint histórico tradicional utilizado pela B3 para
+# distribuição do COTAHIST.
 COTAHIST_URL_TEMPLATES = [
     (
         "https://bvmf.bmfbovespa.com.br/"
         "InstDados/SerHist/"
-        "COTAHIST_A{year}.ZIP"
-    ),
-    (
-        "https://www.b3.com.br/"
-        "p_for_download/"
         "COTAHIST_A{year}.ZIP"
     ),
 ]
@@ -77,7 +71,10 @@ COTAHIST_URL_TEMPLATES = [
 
 USER_AGENT = (
     "Mozilla/5.0 "
-    "(compatible; B3InvestmentEngine/1.0)"
+    "(X11; Linux x86_64) "
+    "AppleWebKit/537.36 "
+    "(KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
 )
 
 
@@ -91,7 +88,6 @@ class B3DataError(RuntimeError):
 
 
 def ensure_directories() -> None:
-
     COTAHIST_DIR.mkdir(
         parents=True,
         exist_ok=True,
@@ -123,75 +119,20 @@ def sha256_file(path: Path) -> str:
 # ============================================================
 
 
-def build_request(
-    url: str,
-    method: str = "GET",
-):
+def build_request(url: str):
 
     return urllib.request.Request(
         url,
-        method=method,
         headers={
             "User-Agent": USER_AGENT,
-            "Accept": "*/*",
+            "Accept": (
+                "application/zip,"
+                "application/octet-stream,"
+                "*/*"
+            ),
+            "Connection": "close",
         },
     )
-
-
-def remote_exists(
-    url: str,
-    timeout: int = 30,
-) -> bool:
-
-    # Primeiro tenta HEAD
-    try:
-
-        req = build_request(
-            url,
-            method="HEAD",
-        )
-
-        with urllib.request.urlopen(
-            req,
-            timeout=timeout,
-        ) as response:
-
-            status = getattr(
-                response,
-                "status",
-                200,
-            )
-
-            if 200 <= status < 400:
-                return True
-
-    except Exception:
-        pass
-
-    # Alguns servidores da B3 não respondem HEAD
-    # corretamente. Fazemos então GET parcial/normal.
-    try:
-
-        req = build_request(
-            url,
-            method="GET",
-        )
-
-        with urllib.request.urlopen(
-            req,
-            timeout=timeout,
-        ) as response:
-
-            status = getattr(
-                response,
-                "status",
-                200,
-            )
-
-            return 200 <= status < 400
-
-    except Exception:
-        return False
 
 
 # ============================================================
@@ -202,7 +143,7 @@ def remote_exists(
 def atomic_download(
     url: str,
     destination: Path,
-    timeout: int = 120,
+    timeout: int = DOWNLOAD_TIMEOUT,
 ) -> None:
 
     destination.parent.mkdir(
@@ -222,13 +163,10 @@ def atomic_download(
 
     try:
 
-        req = build_request(
-            url,
-            method="GET",
-        )
+        request = build_request(url)
 
         with urllib.request.urlopen(
-            req,
+            request,
             timeout=timeout,
         ) as response:
 
@@ -238,20 +176,17 @@ def atomic_download(
                 200,
             )
 
-            if not (
-                200 <= status < 300
-            ):
+            if not 200 <= status < 300:
                 raise B3DataError(
-                    f"HTTP {status}: {url}"
+                    f"HTTP {status}"
                 )
 
-            with tmp_path.open(
-                "wb"
-            ) as f:
+            with tmp_path.open("wb") as f:
 
                 shutil.copyfileobj(
                     response,
                     f,
+                    length=1024 * 1024,
                 )
 
         if (
@@ -259,12 +194,10 @@ def atomic_download(
             or tmp_path.stat().st_size == 0
         ):
             raise B3DataError(
-                f"Download vazio: {url}"
+                "download vazio"
             )
 
-        tmp_path.replace(
-            destination
-        )
+        tmp_path.replace(destination)
 
     except Exception:
 
@@ -279,88 +212,57 @@ def atomic_download(
 # ============================================================
 
 
-def expected_txt_name(
-    year: int,
-) -> str:
-
-    return (
-        f"COTAHIST_A{year}.TXT"
-    )
-
-
 def validate_cotahist_zip(
     path: Path,
     year: int,
 ) -> dict:
 
     if not path.exists():
-
         raise B3DataError(
-            f"Arquivo inexistente: {path}"
+            f"arquivo inexistente: {path}"
         )
 
-    if not zipfile.is_zipfile(
-        path
-    ):
-
+    if path.stat().st_size == 0:
         raise B3DataError(
-            f"Arquivo não é ZIP válido: {path}"
+            f"arquivo vazio: {path}"
         )
 
-    with zipfile.ZipFile(
-        path,
-        "r",
-    ) as zf:
+    if not zipfile.is_zipfile(path):
+        raise B3DataError(
+            f"não é ZIP válido: {path}"
+        )
 
-        members = [
-            name
-            for name in zf.namelist()
-            if not name.endswith("/")
-        ]
+    with zipfile.ZipFile(path, "r") as zf:
 
         txt_members = [
             name
-            for name in members
-            if name.upper().endswith(
-                ".TXT"
+            for name in zf.namelist()
+            if (
+                not name.endswith("/")
+                and name.upper().endswith(".TXT")
             )
         ]
 
         if not txt_members:
-
             raise B3DataError(
-                f"ZIP sem TXT: {path}"
+                f"ZIP sem TXT: {path.name}"
             )
 
-        # O nome interno pode variar em maiúsculas/minúsculas.
-        # Não eliminamos o arquivo somente pelo nome.
         member = txt_members[0]
 
-        info = zf.getinfo(
-            member
-        )
+        info = zf.getinfo(member)
 
         if info.file_size <= 0:
-
             raise B3DataError(
-                f"TXT vazio em {path}"
+                f"TXT vazio: {path.name}"
             )
 
-        # Validação estrutural mínima do COTAHIST.
-        #
-        # Registro COTAHIST possui largura fixa de 245 bytes.
-        # O arquivo possui header 00, registros 01 e trailer 99.
-        with zf.open(
-            member,
-            "r",
-        ) as f:
-
+        with zf.open(member, "r") as f:
             first_line = f.readline()
 
         if not first_line:
-
             raise B3DataError(
-                f"COTAHIST vazio: {path}"
+                f"COTAHIST vazio: {path.name}"
             )
 
         first_text = (
@@ -372,32 +274,28 @@ def validate_cotahist_zip(
             .rstrip("\r\n")
         )
 
-        if not first_text.startswith(
-            "00"
-        ):
-
+        if not first_text.startswith("00"):
             raise B3DataError(
-                "Header COTAHIST inválido "
-                f"em {path.name}"
+                "header COTAHIST inválido: "
+                f"{path.name}"
             )
 
     return {
+        "year": year,
         "zip": path.name,
         "txt_member": member,
-        "txt_size": int(
-            info.file_size
-        ),
         "zip_size": int(
             path.stat().st_size
         ),
-        "sha256": sha256_file(
-            path
+        "txt_size": int(
+            info.file_size
         ),
+        "sha256": sha256_file(path),
     }
 
 
 # ============================================================
-# URLs
+# URL
 # ============================================================
 
 
@@ -406,16 +304,14 @@ def candidate_urls(
 ) -> list[str]:
 
     return [
-        template.format(
-            year=year
-        )
+        template.format(year=year)
         for template
         in COTAHIST_URL_TEMPLATES
     ]
 
 
 # ============================================================
-# DOWNLOAD POR ANO
+# ANO INDIVIDUAL
 # ============================================================
 
 
@@ -428,78 +324,94 @@ def update_cotahist_year(
     )
 
     destination = (
-        COTAHIST_DIR
-        / filename
+        COTAHIST_DIR / filename
     )
 
-    # Se já existe e é válido, preserva.
+    # -----------------------------------------------
+    # Arquivo local já válido: não baixa novamente.
+    # -----------------------------------------------
+
     if destination.exists():
 
         try:
 
-            validation = (
-                validate_cotahist_zip(
-                    destination,
-                    year,
-                )
+            validation = validate_cotahist_zip(
+                destination,
+                year,
             )
 
             return {
-                "year": year,
+                **validation,
                 "status": "EXISTING_VALID",
                 "source_url": None,
-                **validation,
             }
 
         except Exception:
 
-            # Arquivo local corrompido:
-            # remove e baixa novamente.
-            destination.unlink()
+            try:
+                destination.unlink()
+            except Exception:
+                pass
+
+    # -----------------------------------------------
+    # Download direto.
+    #
+    # NÃO fazemos HEAD antes do GET.
+    # Isso elimina a espera duplicada da versão 1.0.
+    # -----------------------------------------------
 
     errors = []
 
-    for url in candidate_urls(
-        year
-    ):
+    for url in candidate_urls(year):
 
         try:
 
-            if not remote_exists(
-                url
-            ):
-                errors.append(
-                    f"não disponível: {url}"
-                )
-                continue
-
             atomic_download(
-                url,
-                destination,
+                url=url,
+                destination=destination,
             )
 
-            validation = (
-                validate_cotahist_zip(
-                    destination,
-                    year,
-                )
+            validation = validate_cotahist_zip(
+                destination,
+                year,
             )
 
             return {
-                "year": year,
+                **validation,
                 "status": "DOWNLOADED",
                 "source_url": url,
-                **validation,
             }
+
+        except urllib.error.HTTPError as exc:
+
+            errors.append(
+                f"HTTP {exc.code}"
+            )
+
+        except urllib.error.URLError as exc:
+
+            errors.append(
+                f"URL_ERROR: {exc.reason}"
+            )
+
+        except TimeoutError:
+
+            errors.append(
+                "TIMEOUT"
+            )
 
         except Exception as exc:
 
             errors.append(
-                f"{url}: {exc}"
+                f"{type(exc).__name__}: {exc}"
             )
 
-            if destination.exists():
+        if destination.exists():
+
+            try:
                 destination.unlink()
+            except Exception:
+                pass
 
     return {
         "year": year,
@@ -510,7 +422,7 @@ def update_cotahist_year(
 
 
 # ============================================================
-# INVENTÁRIO LOCAL
+# INVENTÁRIO
 # ============================================================
 
 
@@ -524,12 +436,10 @@ def local_inventory() -> list[dict]:
         )
     ):
 
-        stem = path.stem
-
         try:
 
             year = int(
-                stem.replace(
+                path.stem.replace(
                     "COTAHIST_A",
                     "",
                 )
@@ -540,18 +450,15 @@ def local_inventory() -> list[dict]:
 
         try:
 
-            validation = (
-                validate_cotahist_zip(
-                    path,
-                    year,
-                )
+            validation = validate_cotahist_zip(
+                path,
+                year,
             )
 
             inventory.append(
                 {
-                    "year": year,
-                    "valid": True,
                     **validation,
+                    "valid": True,
                 }
             )
 
@@ -560,8 +467,8 @@ def local_inventory() -> list[dict]:
             inventory.append(
                 {
                     "year": year,
-                    "valid": False,
                     "zip": path.name,
+                    "valid": False,
                     "error": str(exc),
                 }
             )
@@ -588,37 +495,29 @@ def validate_freshness(
 
     if not valid_years:
 
-        raise B3DataError(
-            "Nenhum COTAHIST válido disponível."
-        )
+        return {
+            "status": "DATA_INSUFFICIENT",
+            "earliest_year": None,
+            "latest_year": None,
+            "years_available": [],
+            "current_year": CURRENT_YEAR,
+            "current_year_available": False,
+        }
 
-    latest_year = max(
-        valid_years
-    )
-
-    # Para histórico de 10 anos precisamos pelo menos
-    # de cobertura suficiente para o motor.
-    earliest_year = min(
-        valid_years
-    )
-
-    historical_coverage = (
-        latest_year
-        - earliest_year
-        + 1
-    )
+    earliest = min(valid_years)
+    latest = max(valid_years)
 
     return {
-        "earliest_year": earliest_year,
-        "latest_year": latest_year,
+        "status": "AVAILABLE",
+        "earliest_year": earliest,
+        "latest_year": latest,
         "years_available": valid_years,
-        "historical_coverage_years": (
-            historical_coverage
+        "number_of_years": len(
+            valid_years
         ),
         "current_year": CURRENT_YEAR,
         "current_year_available": (
-            CURRENT_YEAR
-            in valid_years
+            CURRENT_YEAR in valid_years
         ),
     }
 
@@ -639,7 +538,7 @@ def write_manifest(
             "B3_INVESTMENT_ENGINE"
         ),
         "data_layer": (
-            "LIVE_B3_DATA_V1"
+            "LIVE_B3_HISTORICAL_DATA_V1_1"
         ),
         "generated_at_utc": (
             datetime.now(
@@ -650,10 +549,6 @@ def write_manifest(
             "institution": "B3",
             "dataset": (
                 "COTAHIST - "
-                "Cotações Históricas"
-            ),
-            "official_page": (
-                "B3 / Market Data / "
                 "Cotações Históricas"
             ),
         },
@@ -672,28 +567,18 @@ def write_manifest(
             "status": (
                 "FROZEN_UNCHANGED"
             ),
-            "investability_engine_altered": (
-                False
-            ),
-            "quality_engine_altered": (
-                False
-            ),
-            "valuation_engine_altered": (
-                False
-            ),
-            "sector_engine_altered": (
-                False
-            ),
-            "technical_engine_altered": (
-                False
-            ),
             "history_rule_years": 10,
             "minimum_daily_liquidity_brl": (
                 6_000_000
             ),
-            "official_identity": (
-                "CD_CVM"
+            "official_identity": "CD_CVM",
+            "sector_engine_altered": False,
+            "quality_engine_altered": False,
+            "investability_engine_altered": (
+                False
             ),
+            "valuation_engine_altered": False,
+            "technical_engine_altered": False,
         },
     }
 
@@ -702,14 +587,11 @@ def write_manifest(
         exist_ok=True,
     )
 
-    temp = (
-        MANIFEST_PATH
-        .with_suffix(
-            ".json.tmp"
-        )
+    tmp = MANIFEST_PATH.with_suffix(
+        ".json.tmp"
     )
 
-    temp.write_text(
+    tmp.write_text(
         json.dumps(
             manifest,
             indent=2,
@@ -718,9 +600,7 @@ def write_manifest(
         encoding="utf-8",
     )
 
-    temp.replace(
-        MANIFEST_PATH
-    )
+    tmp.replace(MANIFEST_PATH)
 
 
 # ============================================================
@@ -730,23 +610,20 @@ def write_manifest(
 
 def main() -> int:
 
-    print(
-        "=" * 72
-    )
-    print(
-        "ATUALIZANDO DADOS OFICIAIS B3"
-    )
-    print(
-        "=" * 72
-    )
+    ensure_directories()
+
+    print("=" * 72)
+    print("ATUALIZANDO COTAHIST OFICIAL B3")
+    print("=" * 72)
 
     print(
-        "Fonte: B3 — COTAHIST"
-    )
-
-    print(
-        "Período solicitado:",
+        "Período necessário:",
         f"{FIRST_HISTORY_YEAR}–{CURRENT_YEAR}",
+    )
+
+    print(
+        "Regra de histórico:",
+        "10 anos",
     )
 
     print(
@@ -754,11 +631,7 @@ def main() -> int:
         "FROZEN_UNCHANGED",
     )
 
-    print(
-        "=" * 72
-    )
-
-    ensure_directories()
+    print("=" * 72)
 
     results = []
 
@@ -767,45 +640,57 @@ def main() -> int:
         CURRENT_YEAR + 1,
     ):
 
-        result = (
-            update_cotahist_year(
-                year
+        print(
+            f"COTAHIST {year}...",
+            end=" ",
+            flush=True,
+        )
+
+        result = update_cotahist_year(
+            year
+        )
+
+        results.append(result)
+
+        status = result["status"]
+
+        if status == "DOWNLOADED":
+
+            size_mb = (
+                result["zip_size"]
+                / 1024
+                / 1024
             )
-        )
-
-        results.append(
-            result
-        )
-
-        status = result[
-            "status"
-        ]
-
-        if status in {
-            "DOWNLOADED",
-            "EXISTING_VALID",
-        }:
 
             print(
-                f"✓ COTAHIST {year}: "
-                f"{status}"
+                f"✓ baixado "
+                f"({size_mb:.1f} MB)"
+            )
+
+        elif status == "EXISTING_VALID":
+
+            print(
+                "✓ local válido"
             )
 
         else:
 
-            print(
-                f"− COTAHIST {year}: "
-                "não disponível"
+            error_text = "; ".join(
+                result.get(
+                    "errors",
+                    [],
+                )
             )
 
-    inventory = (
-        local_inventory()
-    )
+            print(
+                "− indisponível",
+                error_text,
+            )
 
-    freshness = (
-        validate_freshness(
-            inventory
-        )
+    inventory = local_inventory()
+
+    freshness = validate_freshness(
+        inventory
     )
 
     write_manifest(
@@ -815,14 +700,13 @@ def main() -> int:
     )
 
     print()
+    print("=" * 72)
+    print("RESULTADO")
+    print("=" * 72)
+
     print(
-        "=" * 72
-    )
-    print(
-        "RESULTADO B3"
-    )
-    print(
-        "=" * 72
+        "Status:",
+        freshness["status"],
     )
 
     print(
@@ -878,32 +762,30 @@ def main() -> int:
         "Technical Engine alterado: NÃO"
     )
 
-    print(
-        "=" * 72
-    )
+    print("=" * 72)
 
-    # O ano corrente pode ainda não existir como COTAHIST anual.
-    # Isso NÃO é tratado aqui como alteração metodológica.
-    #
-    # A camada de produção decidirá se complementa o ano corrente
-    # com o boletim diário oficial B3.
     if not freshness[
         "current_year_available"
     ]:
 
         print(
-            "AVISO: COTAHIST anual do ano "
-            "corrente ainda não disponível."
+            "AVISO:"
         )
 
         print(
-            "Será necessário complementar "
-            "o ano corrente com dados oficiais "
-            "diários da B3."
+            "O COTAHIST anual do ano corrente "
+            "não está disponível nesta fonte."
         )
 
+        print(
+            "A próxima camada deverá completar "
+            "2026 com dados oficiais do período "
+            "corrente antes da investabilidade."
+        )
+
+    print()
     print(
-        "✓ CAMADA B3 HISTÓRICA CONCLUÍDA"
+        "✓ ATUALIZAÇÃO HISTÓRICA B3 CONCLUÍDA"
     )
 
     return 0
@@ -913,9 +795,15 @@ if __name__ == "__main__":
 
     try:
 
-        sys.exit(
-            main()
+        sys.exit(main())
+
+    except KeyboardInterrupt:
+
+        print(
+            "\nExecução interrompida pelo usuário."
         )
+
+        sys.exit(130)
 
     except B3DataError as exc:
 
@@ -930,7 +818,7 @@ if __name__ == "__main__":
     except Exception as exc:
 
         print(
-            "\nERRO INESPERADO:",
+            "\nERRO:",
             repr(exc),
             file=sys.stderr,
         )
