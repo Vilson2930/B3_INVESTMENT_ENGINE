@@ -16,6 +16,13 @@ IMPORTANTE:
     - Não altera classificação setorial.
     - Não altera os motores V1 validados.
     - CD_CVM continua sendo a identidade oficial.
+
+Compatibilidade de produção:
+    - Notebook original: ANO_FONTE
+    - Loader CVM V1: ANO
+
+    Quando ANO_FONTE não existir, ANO é utilizado como ANO_FONTE.
+    Isso é somente adaptação de interface, sem alteração metodológica.
 """
 
 from __future__ import annotations
@@ -77,13 +84,16 @@ class LiveIdentityError(RuntimeError):
 
 def _validate_dre(dre: pd.DataFrame) -> None:
     """
-    Valida somente os campos necessários pela Cell6 original.
+    Valida os campos necessários pela Cell6 original.
+
+    Compatibilidade:
+    - notebook original: ANO_FONTE
+    - loader V1 live: ANO
     """
 
     required = {
         "CD_CVM",
         "DENOM_CIA",
-        "ANO_FONTE",
         "DT_REFER",
     }
 
@@ -95,6 +105,16 @@ def _validate_dre(dre: pd.DataFrame) -> None:
         raise LiveIdentityError(
             "DRE sem campos obrigatórios para identidade CVM: "
             + ", ".join(missing)
+        )
+
+    if (
+        "ANO_FONTE" not in dre.columns
+        and
+        "ANO" not in dre.columns
+    ):
+        raise LiveIdentityError(
+            "DRE sem coluna de ano: "
+            "esperado ANO_FONTE ou ANO."
         )
 
 
@@ -131,12 +151,26 @@ def build_identity_base(
 ) -> pd.DataFrame:
     """
     Reprodução da construção de base_identidade da Cell6.
+
+    Adaptação exclusivamente de interface:
+    o loader V1 utiliza ANO; a Cell6 original utilizava ANO_FONTE.
     """
 
     _validate_dre(dre)
 
+    dre_identity = dre.copy()
+
+    if "ANO_FONTE" not in dre_identity.columns:
+
+        dre_identity["ANO_FONTE"] = (
+            pd.to_numeric(
+                dre_identity["ANO"],
+                errors="coerce",
+            )
+        )
+
     base_identidade = (
-        dre[
+        dre_identity[
             [
                 "CD_CVM",
                 "DENOM_CIA",
