@@ -15,7 +15,7 @@ jobs:
 
     name: B3 Investment Engine
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
 
@@ -77,7 +77,24 @@ jobs:
 
 
       # ======================================================
-      # 6. ATUALIZAR DADOS OFICIAIS CVM
+      # 6. TESTAR MOTORES CONGELADOS
+      # ======================================================
+
+      - name: Test Fundamental Engine
+        run: |
+          python fundamental_engine.py
+
+      - name: Test Technical Timing Engine
+        run: |
+          python technical_engine.py
+
+      - name: Test Integration Engine
+        run: |
+          python integration_engine.py
+
+
+      # ======================================================
+      # 7. ATUALIZAR DADOS OFICIAIS CVM
       # ======================================================
 
       - name: Update official CVM data
@@ -94,7 +111,7 @@ jobs:
 
 
       # ======================================================
-      # 7. AUDITAR DADOS CVM ATUALIZADOS
+      # 8. AUDITAR CAMADA CVM
       # ======================================================
 
       - name: Audit updated CVM data
@@ -120,11 +137,11 @@ jobs:
 
           echo ""
           echo "Arquivos DFP:"
-          find data/live/cvm/dfp -maxdepth 1 -type f -print | sort
+          find data/live/cvm/dfp -maxdepth 1 -type f -print | sort || true
 
           echo ""
           echo "Arquivos ITR:"
-          find data/live/cvm/itr -maxdepth 1 -type f -print | sort
+          find data/live/cvm/itr -maxdepth 1 -type f -print | sort || true
 
           echo ""
           echo "Manifesto:"
@@ -137,68 +154,381 @@ jobs:
 
 
       # ======================================================
-      # 8. TESTAR FUNDAMENTAL ENGINE
+      # 9. ATUALIZAR HISTÓRICO OFICIAL B3
       # ======================================================
 
-      - name: Test Fundamental Engine
+      - name: Update official B3 historical data
         run: |
-          python fundamental_engine.py
+          echo "=========================================="
+          echo "ATUALIZAÇÃO HISTÓRICA B3"
+          echo "=========================================="
+
+          python update_b3_data.py
+
+          echo "=========================================="
+          echo "HISTÓRICO B3 ATUALIZADO"
+          echo "=========================================="
 
 
       # ======================================================
-      # 9. TESTAR TECHNICAL TIMING ENGINE
+      # 10. ATUALIZAR ANO CORRENTE B3
       # ======================================================
 
-      - name: Test Technical Timing Engine
+      - name: Update current-year B3 data
         run: |
-          python technical_engine.py
+          echo "=========================================="
+          echo "ATUALIZAÇÃO B3 — ANO CORRENTE"
+          echo "=========================================="
+
+          python update_b3_current_year.py
+
+          echo "=========================================="
+          echo "B3 ANO CORRENTE ATUALIZADO"
+          echo "=========================================="
 
 
       # ======================================================
-      # 10. TESTAR INTEGRATION ENGINE
+      # 11. CONSTRUIR HISTÓRICO DE MERCADO LIVE
       # ======================================================
 
-      - name: Test Integration Engine
+      - name: Build B3 market history LIVE
         run: |
-          python integration_engine.py
+          echo "=========================================="
+          echo "BUILD B3 MARKET HISTORY LIVE"
+          echo "=========================================="
 
+          python build_b3_market_history.py
 
-      # ======================================================
-      # 11. VERIFICAR DADOS DE ENTRADA
-      # ======================================================
-
-      - name: Check input data
-        run: |
-          echo "Verificando arquivos de entrada..."
-
-          if [ ! -f "data/fundamental_input.csv" ]; then
+          if [ ! -f "data/live/b3/market_history_live.csv" ]; then
             echo "ERRO:"
-            echo "data/fundamental_input.csv não encontrado."
+            echo "market_history_live.csv não foi criado."
             exit 1
           fi
 
-          if [ ! -f "data/technical_prices.csv" ]; then
-            echo "ERRO:"
-            echo "data/technical_prices.csv não encontrado."
-            exit 1
+          echo ""
+          echo "market_history_live.csv: OK"
+
+          if [ -f "data/live/b3/spre_prices_live.csv" ]; then
+            echo "spre_prices_live.csv: OK"
+          else
+            echo "ATENÇÃO:"
+            echo "spre_prices_live.csv não encontrado."
           fi
-
-          echo "Arquivos de entrada encontrados."
-
-          ls -lh data/
 
 
       # ======================================================
-      # 12. EXECUTAR O MOTOR
+      # 12. CONSTRUIR FUNDAMENTOS LIVE
+      # ======================================================
+
+      - name: Build LIVE fundamental input
+        run: |
+          echo "=========================================="
+          echo "BUILD FUNDAMENTAL INPUT LIVE"
+          echo "=========================================="
+
+          python build_live_fundamental_input.py
+
+          echo "=========================================="
+          echo "FUNDAMENTOS LIVE CONSTRUÍDOS"
+          echo "=========================================="
+
+
+      # ======================================================
+      # 13. AUDITAR FUNDAMENTOS LIVE
+      # ======================================================
+
+      - name: Audit LIVE fundamental input
+        run: |
+          echo "=========================================="
+          echo "AUDITORIA FUNDAMENTAL LIVE"
+          echo "=========================================="
+
+          FILE="data/live/fundamental/fundamental_input_live.csv"
+
+          if [ ! -f "$FILE" ]; then
+            echo "ERRO:"
+            echo "$FILE não encontrado."
+            exit 1
+          fi
+
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          path = Path(
+              "data/live/fundamental/"
+              "fundamental_input_live.csv"
+          )
+
+          df = pd.read_csv(
+              path,
+              low_memory=False,
+          )
+
+          df.columns = [
+              str(c).strip().upper()
+              for c in df.columns
+          ]
+
+          required = [
+              "TICKER",
+              "QUALITY_SCORE",
+              "HISTORY_YEARS",
+              "AVG_DAILY_LIQUIDITY_BRL",
+              "VALUATION_SCORE",
+              "FUNDAMENTAL_SCORE",
+          ]
+
+          missing = [
+              c for c in required
+              if c not in df.columns
+          ]
+
+          if missing:
+              raise SystemExit(
+                  "ERRO: colunas ausentes no "
+                  f"fundamental LIVE: {missing}"
+              )
+
+          if df.empty:
+              raise SystemExit(
+                  "ERRO: fundamental_input_live.csv vazio."
+              )
+
+          duplicated = (
+              df["TICKER"]
+              .astype(str)
+              .str.strip()
+              .str.upper()
+              .duplicated()
+              .sum()
+          )
+
+          if duplicated:
+              raise SystemExit(
+                  "ERRO: tickers duplicados no "
+                  "fundamental_input_live.csv."
+              )
+
+          print(
+              "Empresas:",
+              len(df),
+          )
+
+          print(
+              "Tickers únicos:",
+              df["TICKER"].nunique(),
+          )
+
+          print(
+              "Quality Score >= 60:",
+              (
+                  pd.to_numeric(
+                      df["QUALITY_SCORE"],
+                      errors="coerce",
+                  )
+                  >= 60
+              ).sum(),
+          )
+
+          print(
+              "Fundamental LIVE: OK"
+          )
+          PY
+
+
+      # ======================================================
+      # 14. VALIDAR BASE TÉCNICA CONGELADA
+      # ======================================================
+      #
+      # O técnico permanece no Cell06B congelado.
+      #
+      # Não tentamos executar build_technical_prices.py aqui,
+      # porque o builder atual depende do checkpoint original
+      # existente no ambiente de pesquisa/Google Drive.
+      #
+      # O arquivo data/technical_prices.csv deve permanecer
+      # versionado no repositório enquanto a camada técnica
+      # LIVE não for construída.
+      # ======================================================
+
+      - name: Validate frozen technical input
+        run: |
+          echo "=========================================="
+          echo "AUDITORIA TÉCNICA — CELL06B"
+          echo "=========================================="
+
+          FILE="data/technical_prices.csv"
+
+          if [ ! -f "$FILE" ]; then
+            echo "ERRO:"
+            echo "$FILE não encontrado."
+            echo ""
+            echo "A base técnica Cell06B precisa estar"
+            echo "presente no repositório."
+            exit 1
+          fi
+
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          path = Path(
+              "data/technical_prices.csv"
+          )
+
+          df = pd.read_csv(
+              path,
+              low_memory=False,
+          )
+
+          df.columns = [
+              str(c).strip().upper()
+              for c in df.columns
+          ]
+
+          required = [
+              "CD_CVM",
+              "TICKER",
+              "DATE",
+              "TECH_SEGMENT_ID",
+              "OPEN",
+              "HIGH",
+              "LOW",
+              "CLOSE",
+              "SMA200_SLOPE_20D",
+              "ATR_PCT",
+              "ROC_60",
+              "MACD_HIST_PCT",
+              "DIST_SMA_200",
+              "BB_WIDTH",
+              "DIST_SMA_50",
+          ]
+
+          missing = [
+              c for c in required
+              if c not in df.columns
+          ]
+
+          if missing:
+              raise SystemExit(
+                  "ERRO: colunas técnicas ausentes: "
+                  f"{missing}"
+              )
+
+          if df.empty:
+              raise SystemExit(
+                  "ERRO: technical_prices.csv vazio."
+              )
+
+          print(
+              "Registros técnicos:",
+              len(df),
+          )
+
+          print(
+              "Tickers:",
+              df["TICKER"].nunique(),
+          )
+
+          print(
+              "Fonte técnica: CELL06B_FROZEN"
+          )
+
+          print(
+              "Technical Score: NÃO"
+          )
+
+          print(
+              "Base técnica: OK"
+          )
+          PY
+
+
+      # ======================================================
+      # 15. VERIFICAR ENTRADAS DO MAIN
+      # ======================================================
+
+      - name: Check engine input data
+        run: |
+          echo "=========================================="
+          echo "ENTRADAS DO MAIN.PY"
+          echo "=========================================="
+
+          FUNDAMENTAL="data/live/fundamental/fundamental_input_live.csv"
+          TECHNICAL="data/technical_prices.csv"
+
+          if [ ! -f "$FUNDAMENTAL" ]; then
+            echo "ERRO:"
+            echo "$FUNDAMENTAL não encontrado."
+            exit 1
+          fi
+
+          if [ ! -f "$TECHNICAL" ]; then
+            echo "ERRO:"
+            echo "$TECHNICAL não encontrado."
+            exit 1
+          fi
+
+          echo "Fundamental LIVE: OK"
+          echo "Técnico Cell06B: OK"
+
+          echo ""
+          ls -lh "$FUNDAMENTAL"
+          ls -lh "$TECHNICAL"
+
+
+      # ======================================================
+      # 16. EXECUTAR MOTOR
       # ======================================================
 
       - name: Run B3 Investment Engine
         run: |
+          echo "=========================================="
+          echo "EXECUTANDO B3 INVESTMENT ENGINE"
+          echo "=========================================="
+
           python main.py
 
 
       # ======================================================
-      # 13. GERAR RELATÓRIO FINAL
+      # 17. VALIDAR RESULTADO DO MOTOR
+      # ======================================================
+
+      - name: Validate engine results
+        run: |
+          echo "=========================================="
+          echo "VALIDAÇÃO DO RESULTADO"
+          echo "=========================================="
+
+          if [ ! -f "final_report/b3_investment_engine_results.csv" ]; then
+            echo "ERRO:"
+            echo "Resultado completo não encontrado."
+            exit 1
+          fi
+
+          if [ ! -f "final_report/b3_investment_engine_eligible.csv" ]; then
+            echo "ERRO:"
+            echo "Arquivo de elegíveis não encontrado."
+            exit 1
+          fi
+
+          if [ ! -f "final_report/run_summary.json" ]; then
+            echo "ERRO:"
+            echo "run_summary.json não encontrado."
+            exit 1
+          fi
+
+          echo ""
+          echo "Resumo:"
+          cat final_report/run_summary.json
+
+          echo ""
+          echo "Resultado do motor: OK"
+
+
+      # ======================================================
+      # 18. GERAR RELATÓRIO FINAL
       # ======================================================
 
       - name: Generate final report
@@ -207,7 +537,7 @@ jobs:
 
 
       # ======================================================
-      # 14. MOSTRAR ARQUIVOS GERADOS
+      # 19. MOSTRAR ARQUIVOS GERADOS
       # ======================================================
 
       - name: Show generated files
@@ -220,30 +550,42 @@ jobs:
           if [ -d "data/live/cvm" ]; then
             echo ""
             echo "CVM:"
-            find data/live/cvm -maxdepth 2 -type f -print
+            find data/live/cvm -maxdepth 2 -type f -print | sort
+          fi
+
+          if [ -d "data/live/b3" ]; then
+            echo ""
+            echo "B3:"
+            find data/live/b3 -maxdepth 3 -type f -print | sort
+          fi
+
+          if [ -d "data/live/fundamental" ]; then
+            echo ""
+            echo "FUNDAMENTAL LIVE:"
+            find data/live/fundamental -maxdepth 2 -type f -print | sort
           fi
 
           if [ -d "final_report" ]; then
             echo ""
             echo "FINAL REPORT:"
-            find final_report -maxdepth 2 -type f -print
+            find final_report -maxdepth 2 -type f -print | sort
           fi
 
           if [ -d "checkpoints" ]; then
             echo ""
             echo "CHECKPOINTS:"
-            find checkpoints -maxdepth 2 -type f -print
+            find checkpoints -maxdepth 2 -type f -print | sort
           fi
 
           if [ -d "logs" ]; then
             echo ""
             echo "LOGS:"
-            find logs -maxdepth 2 -type f -print
+            find logs -maxdepth 2 -type f -print | sort
           fi
 
 
       # ======================================================
-      # 15. SALVAR RELATÓRIO COMO ARTIFACT
+      # 20. SALVAR RELATÓRIO FINAL
       # ======================================================
 
       - name: Upload final report
@@ -258,22 +600,23 @@ jobs:
 
 
       # ======================================================
-      # 16. SALVAR MANIFESTO CVM
+      # 21. SALVAR MANIFESTOS LIVE
       # ======================================================
 
-      - name: Upload CVM manifest
+      - name: Upload LIVE manifests
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: B3_INVESTMENT_ENGINE_CVM_MANIFEST
+          name: B3_INVESTMENT_ENGINE_LIVE_MANIFESTS
           path: |
             data/live/cvm/cvm_manifest.json
+            data/live/b3/*.json
           if-no-files-found: warn
           retention-days: 30
 
 
       # ======================================================
-      # 17. SALVAR CHECKPOINTS
+      # 22. SALVAR CHECKPOINTS
       # ======================================================
 
       - name: Upload checkpoints
@@ -288,7 +631,7 @@ jobs:
 
 
       # ======================================================
-      # 18. SALVAR LOGS SE HOUVER FALHA
+      # 23. SALVAR LOGS SE HOUVER FALHA
       # ======================================================
 
       - name: Upload logs on failure
