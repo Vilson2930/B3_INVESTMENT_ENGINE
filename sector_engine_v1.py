@@ -1036,7 +1036,7 @@ def run_sector_engine(
     df["STATUS_ARQUITETURA"] = np.where(
         df["ARQUITETURA_APTA_SCORE"],
         "CONGELADA_UTILIZAVEL",
-        "PENDENTE_AUDITORIA_SETORIAL",
+        "PENDENTE_AUDITORIA",
     )
 
     df["MOTOR_ALTERADO"] = (
