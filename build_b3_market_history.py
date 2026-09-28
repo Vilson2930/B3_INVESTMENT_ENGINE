@@ -1,67 +1,47 @@
-"""
-B3 INVESTMENT ENGINE
-BUILD B3 MARKET HISTORY — V2
-
-Objetivo
---------
-Construir a base oficial normalizada de negociação utilizada pelo
-B3 Investability Engine.
-
-Fontes
-------
-1. COTAHIST anual oficial B3
-   - histórico de negociação;
-   - volume financeiro oficial (VOLTOT).
-
-2. BVBG.186.01 / Simplified Price Report — Equities
-   - ano corrente;
-   - XML oficial B3;
-   - utilizado para preços e confirmação da data/ticker;
-   - NÃO utilizado para inventar volume financeiro.
-
-IMPORTANTE
-----------
-Este módulo NÃO altera metodologia.
-
-Ele NÃO:
-- calcula Quality Score;
-- calcula Valuation;
-- altera o limite de 10 anos;
-- altera o limite de R$ 6 milhões;
-- cria Technical Score;
-- cria ranking;
-- substitui o Investability Engine;
-- converte quantidade de negócios em volume financeiro.
-
-Metodologia congelada:
-- histórico mínimo: 10 anos;
-- liquidez média diária mínima: R$ 6 milhões.
-
-O BVBG.186.01 real foi validado como:
-ZIP externo
-    -> ZIP interno
-        -> XML BVBG.186.01
-
-Campos observados no XML:
-TradDt / Dt
-TckrSymb
-FrstPric
-MinPric
-MaxPric
-TradAvrgPric
-LastPric
-RglrTxsQty
-
-O arquivo NÃO contém VOLTOT.
-
-Consequentemente:
-- COTAHIST continua sendo a fonte oficial de VOLTOT;
-- SPRE fornece preços do ano corrente;
-- ausência de VOLTOT no SPRE nunca é mascarada.
-"""
+# ============================================================
+# B3 INVESTMENT ENGINE
+# BUILD B3 MARKET HISTORY — V3 PRODUCTION CACHE
+#
+# OBJETIVO
+# --------
+# Construir a base oficial normalizada de negociação utilizada
+# pelo B3 Investability Engine.
+#
+# FONTES
+# ------
+# 1. COTAHIST anual oficial B3
+#    - histórico de negociação;
+#    - volume financeiro oficial (VOLTOT).
+#
+# 2. BVBG.186.01 / Simplified Price Report — Equities
+#    - ano corrente;
+#    - XML oficial B3;
+#    - preços;
+#    - NÃO inventa volume financeiro.
+#
+# CORREÇÃO V3
+# -----------
+# O V2 reprocessava todos os ZIPs COTAHIST e todos os XMLs
+# SPRE em toda execução.
+#
+# O V3 mantém exatamente a mesma metodologia, mas cria cache
+# individual por arquivo-fonte.
+#
+# Se o arquivo-fonte não mudou:
+#     usa cache.
+#
+# Se o arquivo-fonte mudou:
+#     reprocessa somente aquele arquivo.
+#
+# Se apareceu arquivo novo:
+#     processa somente o novo arquivo.
+#
+# Nenhuma regra metodológica foi alterada.
+# ============================================================
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -82,30 +62,70 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent
 
 DATA_DIR = ROOT / "data"
+
 LIVE_DIR = DATA_DIR / "live"
+
 B3_DIR = LIVE_DIR / "b3"
+
 
 HISTORICAL_DIR = (
     B3_DIR / "cotahist"
 )
 
+
 CURRENT_YEAR_DIR = (
     B3_DIR / "current_year"
 )
+
 
 OUTPUT_FILE = (
     B3_DIR / "market_history_live.csv"
 )
 
+
 SPRE_PRICE_FILE = (
     B3_DIR / "spre_prices_live.csv"
 )
+
 
 MANIFEST_FILE = (
     B3_DIR / "market_history_manifest.json"
 )
 
+
+# ============================================================
+# CACHE
+# ============================================================
+
+CACHE_DIR = (
+    B3_DIR / "cache"
+)
+
+COTAHIST_CACHE_DIR = (
+    CACHE_DIR / "cotahist"
+)
+
+SPRE_CACHE_DIR = (
+    CACHE_DIR / "spre"
+)
+
+
 B3_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+CACHE_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+COTAHIST_CACHE_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+SPRE_CACHE_DIR.mkdir(
     parents=True,
     exist_ok=True,
 )
@@ -119,15 +139,20 @@ CURRENT_YEAR = datetime.now(
     timezone.utc
 ).year
 
+
 COTAHIST_PREFIX = "COTAHIST_A"
 
 SPRE_PREFIX = "SPRE"
 
 VALID_MARKET_TYPE = "010"
 
+
 METHODOLOGY_VERSION = (
-    "B3_MARKET_HISTORY_V2_XML"
+    "B3_MARKET_HISTORY_V3_PRODUCTION_CACHE"
 )
+
+
+CACHE_VERSION = 1
 
 
 # ============================================================
@@ -176,7 +201,9 @@ def write_json_atomic(
         encoding="utf-8",
     )
 
-    tmp.replace(path)
+    tmp.replace(
+        path
+    )
 
 
 def write_csv_atomic(
@@ -194,14 +221,19 @@ def write_csv_atomic(
         encoding="utf-8-sig",
     )
 
-    tmp.replace(path)
+    tmp.replace(
+        path
+    )
 
 
 def normalize_ticker(
     value,
 ):
 
-    if pd.isna(value):
+    if pd.isna(
+        value
+    ):
+
         return None
 
     value = (
@@ -211,6 +243,7 @@ def normalize_ticker(
     )
 
     if not value:
+
         return None
 
     return value
@@ -221,6 +254,7 @@ def local_name(
 ) -> str:
 
     if "}" in tag:
+
         return tag.rsplit(
             "}",
             1,
@@ -234,6 +268,7 @@ def safe_float(
 ):
 
     if value is None:
+
         return None
 
     value = str(
@@ -241,9 +276,11 @@ def safe_float(
     ).strip()
 
     if not value:
+
         return None
 
     try:
+
         return float(
             value
         )
@@ -252,7 +289,180 @@ def safe_float(
         TypeError,
         ValueError,
     ):
+
         return None
+
+
+# ============================================================
+# FILE SIGNATURE
+# ============================================================
+#
+# Não calculamos hash do arquivo inteiro.
+#
+# Isso também poderia custar tempo desnecessário.
+#
+# Para invalidar o cache usamos:
+#
+# - nome
+# - tamanho
+# - mtime_ns
+# - versão do cache
+#
+# ============================================================
+
+def file_signature(
+    path: Path,
+) -> str:
+
+    stat = path.stat()
+
+    payload = (
+        f"{CACHE_VERSION}|"
+        f"{path.name}|"
+        f"{stat.st_size}|"
+        f"{stat.st_mtime_ns}"
+    )
+
+    return hashlib.sha256(
+        payload.encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def cache_paths(
+    source_path: Path,
+    cache_dir: Path,
+):
+
+    safe_name = re.sub(
+        r"[^A-Za-z0-9_.-]+",
+        "_",
+        source_path.name,
+    )
+
+    data_path = (
+        cache_dir
+        / f"{safe_name}.csv"
+    )
+
+    meta_path = (
+        cache_dir
+        / f"{safe_name}.json"
+    )
+
+    return (
+        data_path,
+        meta_path,
+    )
+
+
+def load_valid_cache(
+    source_path: Path,
+    cache_dir: Path,
+):
+
+    data_path, meta_path = cache_paths(
+        source_path,
+        cache_dir,
+    )
+
+    if not data_path.exists():
+
+        return None
+
+    if not meta_path.exists():
+
+        return None
+
+    try:
+
+        meta = json.loads(
+            meta_path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+    except Exception:
+
+        return None
+
+    expected_signature = file_signature(
+        source_path
+    )
+
+    if (
+        meta.get(
+            "signature"
+        )
+        !=
+        expected_signature
+    ):
+
+        return None
+
+    try:
+
+        df = pd.read_csv(
+            data_path,
+            low_memory=False,
+        )
+
+    except Exception:
+
+        return None
+
+    return df
+
+
+def save_cache(
+    source_path: Path,
+    cache_dir: Path,
+    df: pd.DataFrame,
+):
+
+    data_path, meta_path = cache_paths(
+        source_path,
+        cache_dir,
+    )
+
+    write_csv_atomic(
+        df,
+        data_path,
+    )
+
+    meta = {
+
+        "cache_version":
+            CACHE_VERSION,
+
+        "source_file":
+            source_path.name,
+
+        "source_size":
+            source_path.stat().st_size,
+
+        "source_mtime_ns":
+            source_path.stat().st_mtime_ns,
+
+        "signature":
+            file_signature(
+                source_path
+            ),
+
+        "rows":
+            int(
+                len(df)
+            ),
+
+        "generated_at_utc":
+            utc_now_iso(),
+    }
+
+    write_json_atomic(
+        meta,
+        meta_path,
+    )
 
 
 # ============================================================
@@ -263,29 +473,8 @@ def parse_cotahist_line(
     line: str,
 ):
 
-    """
-    Layout oficial COTAHIST necessário ao projeto.
-
-    Campos utilizados:
-
-    TIPREG
-        posições 1-2
-
-    DATA
-        posições 3-10
-
-    CODNEG
-        posições 13-24
-
-    TPMERC
-        posições 25-27
-
-    VOLTOT
-        posições 171-188
-        valor com 2 casas decimais implícitas
-    """
-
     if len(line) < 188:
+
         return None
 
     tipreg = (
@@ -294,6 +483,7 @@ def parse_cotahist_line(
     )
 
     if tipreg != "01":
+
         return None
 
     data_raw = (
@@ -313,9 +503,11 @@ def parse_cotahist_line(
     )
 
     if tpmerc != VALID_MARKET_TYPE:
+
         return None
 
     if not ticker:
+
         return None
 
     try:
@@ -327,6 +519,7 @@ def parse_cotahist_line(
         )
 
     except Exception:
+
         return None
 
     vol_raw = (
@@ -337,17 +530,22 @@ def parse_cotahist_line(
     try:
 
         voltot = (
-            int(vol_raw)
-            / 100.0
+            int(
+                vol_raw
+            )
+            /
+            100.0
         )
 
     except (
         TypeError,
         ValueError,
     ):
+
         return None
 
     return {
+
         "TICKER":
             ticker,
 
@@ -355,50 +553,35 @@ def parse_cotahist_line(
             data,
 
         "VOLTOT":
-            float(voltot),
+            float(
+                voltot
+            ),
 
         "SOURCE":
             "B3_COTAHIST",
     }
 
 
-def parse_cotahist_text(
-    text: str,
-) -> pd.DataFrame:
-
-    records = []
-
-    for line in text.splitlines():
-
-        row = parse_cotahist_line(
-            line
-        )
-
-        if row is not None:
-
-            records.append(
-                row
-            )
-
-    if not records:
-
-        return pd.DataFrame(
-            columns=[
-                "TICKER",
-                "DATA",
-                "VOLTOT",
-                "SOURCE",
-            ]
-        )
-
-    return pd.DataFrame(
-        records
-    )
-
+# ============================================================
+# COTAHIST — PARSER STREAMING
+# ============================================================
+#
+# V2:
+#   archive.read() -> bytes completos
+#   decode()        -> string completa
+#   splitlines()    -> nova estrutura inteira
+#
+# V3:
+#   lê linha por linha diretamente do ZIP.
+#
+# Isso reduz memória e trabalho intermediário.
+# ============================================================
 
 def parse_cotahist_zip(
     path: Path,
 ) -> pd.DataFrame:
+
+    records = []
 
     try:
 
@@ -438,9 +621,40 @@ def parse_cotahist_zip(
 
                 name = names[0]
 
-            payload = archive.read(
-                name
-            )
+            with archive.open(
+                name,
+                "r",
+            ) as stream:
+
+                for raw_line in stream:
+
+                    try:
+
+                        line = raw_line.decode(
+                            "latin-1"
+                        )
+
+                    except UnicodeDecodeError:
+
+                        try:
+
+                            line = raw_line.decode(
+                                "utf-8"
+                            )
+
+                        except UnicodeDecodeError:
+
+                            continue
+
+                    row = parse_cotahist_line(
+                        line
+                    )
+
+                    if row is not None:
+
+                        records.append(
+                            row
+                        )
 
     except zipfile.BadZipFile as exc:
 
@@ -449,36 +663,93 @@ def parse_cotahist_zip(
             f"{path}"
         ) from exc
 
-    text = None
+    if not records:
 
-    for encoding in (
-        "latin-1",
-        "utf-8",
-        "utf-8-sig",
-    ):
-
-        try:
-
-            text = payload.decode(
-                encoding
-            )
-
-            break
-
-        except UnicodeDecodeError:
-            continue
-
-    if text is None:
-
-        raise DataInsufficientError(
-            "Não foi possível decodificar "
-            f"COTAHIST: {path}"
+        return pd.DataFrame(
+            columns=[
+                "TICKER",
+                "DATA",
+                "VOLTOT",
+                "SOURCE",
+            ]
         )
 
-    return parse_cotahist_text(
-        text
+    return pd.DataFrame(
+        records
     )
 
+
+# ============================================================
+# COTAHIST — CACHE INDIVIDUAL
+# ============================================================
+
+def load_cotahist_file(
+    path: Path,
+):
+
+    cached = load_valid_cache(
+        path,
+        COTAHIST_CACHE_DIR,
+    )
+
+    if cached is not None:
+
+        print(
+            f"  CACHE COTAHIST: {path.name}"
+        )
+
+        cached["DATA"] = pd.to_datetime(
+            cached["DATA"],
+            errors="coerce",
+        )
+
+        cached["VOLTOT"] = pd.to_numeric(
+            cached["VOLTOT"],
+            errors="coerce",
+        )
+
+        return (
+            cached,
+            True,
+        )
+
+    print(
+        f"  PROCESSANDO COTAHIST: {path.name}"
+    )
+
+    df = parse_cotahist_zip(
+        path
+    )
+
+    if not df.empty:
+
+        cache_df = df.copy()
+
+        cache_df["DATA"] = (
+            pd.to_datetime(
+                cache_df["DATA"],
+                errors="coerce",
+            )
+            .dt.strftime(
+                "%Y-%m-%d"
+            )
+        )
+
+        save_cache(
+            path,
+            COTAHIST_CACHE_DIR,
+            cache_df,
+        )
+
+    return (
+        df,
+        False,
+    )
+
+
+# ============================================================
+# COTAHIST — HISTÓRICO
+# ============================================================
 
 def load_historical_cotahist():
 
@@ -505,6 +776,7 @@ def load_historical_cotahist():
     )
 
     unique_files = []
+
     seen = set()
 
     for path in files:
@@ -514,6 +786,7 @@ def load_historical_cotahist():
         )
 
         if resolved in seen:
+
             continue
 
         seen.add(
@@ -532,7 +805,12 @@ def load_historical_cotahist():
         )
 
     frames = []
+
     years_loaded = []
+
+    cache_hits = 0
+
+    processed_files = 0
 
     for path in unique_files:
 
@@ -542,17 +820,29 @@ def load_historical_cotahist():
         )
 
         if not match:
+
             continue
 
         year = int(
             match.group(1)
         )
 
-        df = parse_cotahist_zip(
-            path
+        df, from_cache = (
+            load_cotahist_file(
+                path
+            )
         )
 
+        if from_cache:
+
+            cache_hits += 1
+
+        else:
+
+            processed_files += 1
+
         if df.empty:
+
             continue
 
         frames.append(
@@ -577,21 +867,19 @@ def load_historical_cotahist():
 
     result["TICKER"] = (
         result["TICKER"]
-        .map(normalize_ticker)
-    )
-
-    result["DATA"] = (
-        pd.to_datetime(
-            result["DATA"],
-            errors="coerce",
+        .map(
+            normalize_ticker
         )
     )
 
-    result["VOLTOT"] = (
-        pd.to_numeric(
-            result["VOLTOT"],
-            errors="coerce",
-        )
+    result["DATA"] = pd.to_datetime(
+        result["DATA"],
+        errors="coerce",
+    )
+
+    result["VOLTOT"] = pd.to_numeric(
+        result["VOLTOT"],
+        errors="coerce",
     )
 
     result = result.dropna(
@@ -625,9 +913,24 @@ def load_historical_cotahist():
         )
     )
 
+    cache_stats = {
+
+        "cotahist_files":
+            len(
+                unique_files
+            ),
+
+        "cotahist_cache_hits":
+            cache_hits,
+
+        "cotahist_processed":
+            processed_files,
+    }
+
     return (
         result,
         years_loaded,
+        cache_stats,
     )
 
 
@@ -693,18 +996,6 @@ def _read_outer_zip(
 def _extract_spre_xml(
     path: Path,
 ) -> bytes:
-
-    """
-    Estrutura real validada:
-
-    SPREYYMMDD.zip
-        -> SPREYYMMDD.zip
-            -> BVBG.186.01_....xml
-
-    Também aceita XML diretamente dentro
-    do ZIP externo caso a B3 altere apenas
-    o empacotamento, sem alterar o conteúdo.
-    """
 
     payload = _read_outer_zip(
         path
@@ -791,10 +1082,14 @@ def _extract_spre_xml(
 
     stripped = payload.lstrip()
 
-    if not stripped.startswith(
-        b"<?xml"
-    ) and not stripped.startswith(
-        b"<"
+    if (
+        not stripped.startswith(
+            b"<?xml"
+        )
+        and
+        not stripped.startswith(
+            b"<"
+        )
     ):
 
         raise DataInsufficientError(
@@ -805,7 +1100,7 @@ def _extract_spre_xml(
 
 
 # ============================================================
-# SPRE — XML BVBG.186.01
+# SPRE — XML
 # ============================================================
 
 def _element_values(
@@ -817,6 +1112,7 @@ def _element_values(
     for child in element.iter():
 
         if child is element:
+
             continue
 
         key = local_name(
@@ -829,7 +1125,9 @@ def _element_values(
 
         if text:
 
-            values[key] = text
+            values[
+                key
+            ] = text
 
     return values
 
@@ -838,27 +1136,6 @@ def parse_spre_xml(
     payload: bytes,
     filename_trade_date: pd.Timestamp,
 ) -> pd.DataFrame:
-
-    """
-    Parser streaming.
-
-    O XML real pode ter dezenas de MB.
-    Portanto não carregamos a árvore inteira
-    na memória.
-
-    Unidade lógica observada:
-        PricRpt
-
-    Campos extraídos:
-        TradDt/Dt
-        TckrSymb
-        FrstPric
-        MinPric
-        MaxPric
-        TradAvrgPric
-        LastPric
-        RglrTxsQty
-    """
 
     records = []
 
@@ -896,6 +1173,7 @@ def parse_spre_xml(
             if not ticker:
 
                 elem.clear()
+
                 continue
 
             date_value = (
@@ -926,6 +1204,7 @@ def parse_spre_xml(
             ):
 
                 elem.clear()
+
                 continue
 
             records.append(
@@ -1014,8 +1293,8 @@ def parse_spre_xml(
         ]
     )
 
-    # Não convertemos RglrTxsQty em VOLTOT.
-    # São grandezas diferentes.
+    # IMPORTANTE:
+    # REGULAR_TRADES_QTY NÃO é VOLTOT.
 
     return (
         df
@@ -1047,7 +1326,9 @@ def parse_spre_zip(
             f"{path.name}"
         )
 
-    date_code = match.group(1)
+    date_code = match.group(
+        1
+    )
 
     filename_trade_date = (
         pd.to_datetime(
@@ -1074,6 +1355,87 @@ def parse_spre_zip(
         )
 
     return df
+
+
+# ============================================================
+# SPRE — CACHE INDIVIDUAL
+# ============================================================
+
+def load_spre_file(
+    path: Path,
+):
+
+    cached = load_valid_cache(
+        path,
+        SPRE_CACHE_DIR,
+    )
+
+    if cached is not None:
+
+        print(
+            f"  CACHE SPRE: {path.name}"
+        )
+
+        cached["DATA"] = pd.to_datetime(
+            cached["DATA"],
+            errors="coerce",
+        )
+
+        numeric_columns = [
+            "FIRST_PRICE",
+            "LOW_PRICE",
+            "HIGH_PRICE",
+            "AVG_PRICE",
+            "LAST_PRICE",
+            "REGULAR_TRADES_QTY",
+        ]
+
+        for column in numeric_columns:
+
+            if column in cached.columns:
+
+                cached[column] = pd.to_numeric(
+                    cached[column],
+                    errors="coerce",
+                )
+
+        return (
+            cached,
+            True,
+        )
+
+    print(
+        f"  PROCESSANDO SPRE: {path.name}"
+    )
+
+    df = parse_spre_zip(
+        path
+    )
+
+    if not df.empty:
+
+        cache_df = df.copy()
+
+        cache_df["DATA"] = (
+            pd.to_datetime(
+                cache_df["DATA"],
+                errors="coerce",
+            )
+            .dt.strftime(
+                "%Y-%m-%d"
+            )
+        )
+
+        save_cache(
+            path,
+            SPRE_CACHE_DIR,
+            cache_df,
+        )
+
+    return (
+        df,
+        False,
+    )
 
 
 # ============================================================
@@ -1105,6 +1467,7 @@ def load_current_year_spre():
     )
 
     unique_files = []
+
     seen = set()
 
     for path in files:
@@ -1114,6 +1477,7 @@ def load_current_year_spre():
         )
 
         if resolved in seen:
+
             continue
 
         seen.add(
@@ -1132,15 +1496,38 @@ def load_current_year_spre():
         )
 
     frames = []
+
     failures = []
 
-    for path in unique_files:
+    cache_hits = 0
+
+    processed_files = 0
+
+    for index, path in enumerate(
+        unique_files,
+        start=1,
+    ):
+
+        print(
+            f"  SPRE {index}/{len(unique_files)} "
+            f"- {path.name}"
+        )
 
         try:
 
-            df = parse_spre_zip(
-                path
+            df, from_cache = (
+                load_spre_file(
+                    path
+                )
             )
+
+            if from_cache:
+
+                cache_hits += 1
+
+            else:
+
+                processed_files += 1
 
             if not df.empty:
 
@@ -1156,7 +1543,9 @@ def load_current_year_spre():
                         path.name,
 
                     "error":
-                        str(exc),
+                        str(
+                            exc
+                        ),
                 }
             )
 
@@ -1171,6 +1560,25 @@ def load_current_year_spre():
     result = pd.concat(
         frames,
         ignore_index=True,
+    )
+
+    result["DATA"] = pd.to_datetime(
+        result["DATA"],
+        errors="coerce",
+    )
+
+    result["TICKER"] = (
+        result["TICKER"]
+        .map(
+            normalize_ticker
+        )
+    )
+
+    result = result.dropna(
+        subset=[
+            "TICKER",
+            "DATA",
+        ]
     )
 
     result = (
@@ -1193,9 +1601,24 @@ def load_current_year_spre():
         )
     )
 
+    cache_stats = {
+
+        "spre_files":
+            len(
+                unique_files
+            ),
+
+        "spre_cache_hits":
+            cache_hits,
+
+        "spre_processed":
+            processed_files,
+    }
+
     return (
         result,
         failures,
+        cache_stats,
     )
 
 
@@ -1208,14 +1631,12 @@ def consolidate_market_history(
 ) -> pd.DataFrame:
 
     """
-    A base de liquidez é construída somente
-    com observações que possuem VOLTOT oficial.
+    A base de liquidez continua sendo construída
+    exclusivamente com observações que possuem
+    VOLTOT oficial.
 
-    O SPRE não entra nesta concatenação porque
+    SPRE não entra na liquidez porque
     BVBG.186.01 não fornece VOLTOT.
-
-    Isso evita adulteração da regra congelada
-    de liquidez média diária.
     """
 
     required = {
@@ -1249,21 +1670,19 @@ def consolidate_market_history(
 
     market["TICKER"] = (
         market["TICKER"]
-        .map(normalize_ticker)
-    )
-
-    market["DATA"] = (
-        pd.to_datetime(
-            market["DATA"],
-            errors="coerce",
+        .map(
+            normalize_ticker
         )
     )
 
-    market["VOLTOT"] = (
-        pd.to_numeric(
-            market["VOLTOT"],
-            errors="coerce",
-        )
+    market["DATA"] = pd.to_datetime(
+        market["DATA"],
+        errors="coerce",
+    )
+
+    market["VOLTOT"] = pd.to_numeric(
+        market["VOLTOT"],
+        errors="coerce",
     )
 
     market = market.dropna(
@@ -1278,10 +1697,6 @@ def consolidate_market_history(
         market["VOLTOT"] >= 0
     ].copy()
 
-    # Caso existam registros duplicados,
-    # soma-se o volume financeiro do mesmo
-    # ticker na mesma sessão.
-
     market = (
         market
         .groupby(
@@ -1290,6 +1705,7 @@ def consolidate_market_history(
                 "DATA",
             ],
             as_index=False,
+            sort=False,
         )["VOLTOT"]
         .sum()
     )
@@ -1372,6 +1788,7 @@ def audit_market_history(
         )
 
     return {
+
         "historical_first_date":
             historical_first.date().isoformat(),
 
@@ -1426,12 +1843,16 @@ def build_b3_market_history():
 
     print(
         "B3 INVESTMENT ENGINE — "
-        "BUILD MARKET HISTORY V2 XML"
+        "BUILD MARKET HISTORY V3"
     )
 
     print(
         "=" * 72
     )
+
+    # ========================================================
+    # 1. COTAHIST
+    # ========================================================
 
     print(
         "\n[1/3] COTAHIST histórico..."
@@ -1440,17 +1861,38 @@ def build_b3_market_history():
     (
         historical,
         years_loaded,
+        cotahist_cache,
     ) = load_historical_cotahist()
 
     print(
-        "Anos históricos:",
+        "\nAnos históricos:",
         years_loaded,
     )
 
     print(
         "Registros históricos:",
-        len(historical),
+        len(
+            historical
+        ),
     )
+
+    print(
+        "COTAHIST via cache:",
+        cotahist_cache[
+            "cotahist_cache_hits"
+        ],
+    )
+
+    print(
+        "COTAHIST processados agora:",
+        cotahist_cache[
+            "cotahist_processed"
+        ],
+    )
+
+    # ========================================================
+    # 2. SPRE
+    # ========================================================
 
     print(
         "\n[2/3] B3 ano corrente "
@@ -1460,11 +1902,14 @@ def build_b3_market_history():
     (
         spre_prices,
         current_failures,
+        spre_cache,
     ) = load_current_year_spre()
 
     print(
-        "Registros SPRE:",
-        len(spre_prices),
+        "\nRegistros SPRE:",
+        len(
+            spre_prices
+        ),
     )
 
     print(
@@ -1475,9 +1920,29 @@ def build_b3_market_history():
     )
 
     print(
-        "Arquivos SPRE ignorados:",
-        len(current_failures),
+        "SPRE via cache:",
+        spre_cache[
+            "spre_cache_hits"
+        ],
     )
+
+    print(
+        "SPRE processados agora:",
+        spre_cache[
+            "spre_processed"
+        ],
+    )
+
+    print(
+        "Arquivos SPRE ignorados:",
+        len(
+            current_failures
+        ),
+    )
+
+    # ========================================================
+    # 3. CONSOLIDAÇÃO
+    # ========================================================
 
     print(
         "\n[3/3] Consolidação..."
@@ -1494,9 +1959,9 @@ def build_b3_market_history():
         spre_prices,
     )
 
-    # --------------------------------------------------------
-    # LIQUIDEZ
-    # --------------------------------------------------------
+    # ========================================================
+    # SALVAR LIQUIDEZ
+    # ========================================================
 
     write_csv_atomic(
         market[
@@ -1509,9 +1974,9 @@ def build_b3_market_history():
         OUTPUT_FILE,
     )
 
-    # --------------------------------------------------------
-    # PREÇOS SPRE
-    # --------------------------------------------------------
+    # ========================================================
+    # SALVAR PREÇOS SPRE
+    # ========================================================
 
     write_csv_atomic(
         spre_prices[
@@ -1530,9 +1995,9 @@ def build_b3_market_history():
         SPRE_PRICE_FILE,
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # MANIFEST
-    # --------------------------------------------------------
+    # ========================================================
 
     manifest = {
 
@@ -1603,10 +2068,44 @@ def build_b3_market_history():
                 "spre_tickers"
             ],
 
+        "cache": {
+
+            "cotahist_files":
+                cotahist_cache[
+                    "cotahist_files"
+                ],
+
+            "cotahist_cache_hits":
+                cotahist_cache[
+                    "cotahist_cache_hits"
+                ],
+
+            "cotahist_processed":
+                cotahist_cache[
+                    "cotahist_processed"
+                ],
+
+            "spre_files":
+                spre_cache[
+                    "spre_files"
+                ],
+
+            "spre_cache_hits":
+                spre_cache[
+                    "spre_cache_hits"
+                ],
+
+            "spre_processed":
+                spre_cache[
+                    "spre_processed"
+                ],
+        },
+
         "current_year_parse_failures":
             current_failures,
 
         "source_limitation": {
+
             "bvbg_186_01_contains_voltot":
                 False,
 
@@ -1657,6 +2156,10 @@ def build_b3_market_history():
         MANIFEST_FILE,
     )
 
+    # ========================================================
+    # FINAL
+    # ========================================================
+
     print(
         "\n"
         + "=" * 72
@@ -1677,6 +2180,13 @@ def build_b3_market_history():
         "COTAHIST última data:",
         audit[
             "historical_latest_date"
+        ],
+    )
+
+    print(
+        "SPRE primeira data:",
+        audit[
+            "spre_first_date"
         ],
     )
 
@@ -1716,6 +2226,38 @@ def build_b3_market_history():
     )
 
     print(
+        "\nCACHE:"
+    )
+
+    print(
+        "COTAHIST reaproveitados:",
+        cotahist_cache[
+            "cotahist_cache_hits"
+        ],
+    )
+
+    print(
+        "COTAHIST processados:",
+        cotahist_cache[
+            "cotahist_processed"
+        ],
+    )
+
+    print(
+        "SPRE reaproveitados:",
+        spre_cache[
+            "spre_cache_hits"
+        ],
+    )
+
+    print(
+        "SPRE processados:",
+        spre_cache[
+            "spre_processed"
+        ],
+    )
+
+    print(
         "\nATENÇÃO:"
     )
 
@@ -1747,6 +2289,7 @@ def build_b3_market_history():
     )
 
     return {
+
         "market_history":
             market,
 
@@ -1755,6 +2298,15 @@ def build_b3_market_history():
 
         "audit":
             audit,
+
+        "cache":
+            {
+                "cotahist":
+                    cotahist_cache,
+
+                "spre":
+                    spre_cache,
+            },
     }
 
 
@@ -1784,7 +2336,9 @@ def main():
 
         print(
             "\nERROR:",
-            repr(exc),
+            repr(
+                exc
+            ),
             file=sys.stderr,
         )
 
