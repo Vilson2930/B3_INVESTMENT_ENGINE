@@ -15,7 +15,7 @@ jobs:
 
     name: B3 Investment Engine
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
 
@@ -94,7 +94,84 @@ jobs:
 
 
       # ======================================================
-      # 7. ATUALIZAR DADOS OFICIAIS CVM
+      # 7. RESTAURAR CACHE PERSISTENTE B3
+      # ======================================================
+      #
+      # O runner do GitHub nasce limpo em cada execução.
+      #
+      # Este cache preserva:
+      #
+      # - COTAHIST já baixado;
+      # - cache de processamento do market history.
+      #
+      # IMPORTANTE:
+      # isso NÃO congela os dados.
+      #
+      # update_b3_data.py continua sendo executado em TODA
+      # rodada e verifica se existem arquivos históricos
+      # necessários ausentes.
+      #
+      # O ano corrente também continua sendo atualizado
+      # separadamente em TODA execução.
+      # ======================================================
+
+      - name: Restore B3 persistent cache
+        id: b3-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/live/b3/cotahist
+            data/live/b3/cache
+          key: b3-market-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            b3-market-${{ runner.os }}-
+
+
+      # ======================================================
+      # 8. AUDITAR CACHE RESTAURADO
+      # ======================================================
+
+      - name: Audit restored B3 cache
+        run: |
+          echo "=========================================="
+          echo "CACHE B3 RESTAURADO"
+          echo "=========================================="
+
+          echo "Cache hit exato:"
+          echo "${{ steps.b3-cache.outputs.cache-hit }}"
+
+          echo ""
+
+          if [ -d "data/live/b3/cotahist" ]; then
+            echo "COTAHIST disponíveis:"
+            find data/live/b3/cotahist \
+              -maxdepth 1 \
+              -type f \
+              -print \
+              | sort
+          else
+            echo "Nenhum COTAHIST restaurado."
+            echo "Será criado nesta execução."
+          fi
+
+          echo ""
+
+          if [ -d "data/live/b3/cache" ]; then
+            echo "Caches de processamento:"
+            find data/live/b3/cache \
+              -maxdepth 3 \
+              -type f \
+              -print \
+              | sort
+          else
+            echo "Nenhum cache de processamento restaurado."
+          fi
+
+          echo "=========================================="
+
+
+      # ======================================================
+      # 9. ATUALIZAR DADOS OFICIAIS CVM
       # ======================================================
 
       - name: Update official CVM data
@@ -111,7 +188,7 @@ jobs:
 
 
       # ======================================================
-      # 8. AUDITAR CAMADA CVM
+      # 10. AUDITAR CAMADA CVM
       # ======================================================
 
       - name: Audit updated CVM data
@@ -137,11 +214,19 @@ jobs:
 
           echo ""
           echo "Arquivos DFP:"
-          find data/live/cvm/dfp -maxdepth 1 -type f -print | sort || true
+          find data/live/cvm/dfp \
+            -maxdepth 1 \
+            -type f \
+            -print \
+            | sort || true
 
           echo ""
           echo "Arquivos ITR:"
-          find data/live/cvm/itr -maxdepth 1 -type f -print | sort || true
+          find data/live/cvm/itr \
+            -maxdepth 1 \
+            -type f \
+            -print \
+            | sort || true
 
           echo ""
           echo "Manifesto:"
@@ -154,7 +239,19 @@ jobs:
 
 
       # ======================================================
-      # 9. ATUALIZAR HISTÓRICO OFICIAL B3
+      # 11. ATUALIZAR HISTÓRICO OFICIAL B3
+      # ======================================================
+      #
+      # Executa SEMPRE.
+      #
+      # O próprio update_b3_data.py decide:
+      #
+      # - arquivo existente e válido -> reutiliza;
+      # - arquivo ausente/inválido   -> baixa novamente.
+      #
+      # Portanto:
+      #
+      # CACHE != DADOS CONGELADOS.
       # ======================================================
 
       - name: Update official B3 historical data
@@ -171,7 +268,13 @@ jobs:
 
 
       # ======================================================
-      # 10. ATUALIZAR ANO CORRENTE B3
+      # 12. ATUALIZAR ANO CORRENTE B3
+      # ======================================================
+      #
+      # Esta etapa também executa SEMPRE.
+      #
+      # O objetivo é buscar o dado disponível do ano/pregão
+      # corrente independentemente do cache histórico.
       # ======================================================
 
       - name: Update current-year B3 data
@@ -188,7 +291,16 @@ jobs:
 
 
       # ======================================================
-      # 11. CONSTRUIR HISTÓRICO DE MERCADO LIVE
+      # 13. CONSTRUIR HISTÓRICO DE MERCADO LIVE
+      # ======================================================
+      #
+      # build_b3_market_history.py V3:
+      #
+      # - reutiliza cache por arquivo;
+      # - processa somente arquivo novo/alterado;
+      # - mantém COTAHIST como fonte do VOLTOT;
+      # - mantém SPRE como fonte de preço atual;
+      # - não converte RglrTxsQty em VOLTOT.
       # ======================================================
 
       - name: Build B3 market history LIVE
@@ -211,13 +323,20 @@ jobs:
           if [ -f "data/live/b3/spre_prices_live.csv" ]; then
             echo "spre_prices_live.csv: OK"
           else
-            echo "ATENÇÃO:"
+            echo "ERRO:"
             echo "spre_prices_live.csv não encontrado."
+            exit 1
+          fi
+
+          if [ -f "data/live/b3/market_history_manifest.json" ]; then
+            echo ""
+            echo "Manifesto B3:"
+            cat data/live/b3/market_history_manifest.json
           fi
 
 
       # ======================================================
-      # 12. CONSTRUIR FUNDAMENTOS LIVE
+      # 14. CONSTRUIR FUNDAMENTOS LIVE
       # ======================================================
 
       - name: Build LIVE fundamental input
@@ -234,7 +353,7 @@ jobs:
 
 
       # ======================================================
-      # 13. AUDITAR FUNDAMENTOS LIVE
+      # 15. AUDITAR FUNDAMENTOS LIVE
       # ======================================================
 
       - name: Audit LIVE fundamental input
@@ -280,7 +399,8 @@ jobs:
           ]
 
           missing = [
-              c for c in required
+              c
+              for c in required
               if c not in df.columns
           ]
 
@@ -295,11 +415,15 @@ jobs:
                   "ERRO: fundamental_input_live.csv vazio."
               )
 
-          duplicated = (
+          tickers = (
               df["TICKER"]
               .astype(str)
               .str.strip()
               .str.upper()
+          )
+
+          duplicated = (
+              tickers
               .duplicated()
               .sum()
           )
@@ -310,6 +434,11 @@ jobs:
                   "fundamental_input_live.csv."
               )
 
+          quality = pd.to_numeric(
+              df["QUALITY_SCORE"],
+              errors="coerce",
+          )
+
           print(
               "Empresas:",
               len(df),
@@ -317,18 +446,14 @@ jobs:
 
           print(
               "Tickers únicos:",
-              df["TICKER"].nunique(),
+              tickers.nunique(),
           )
 
           print(
               "Quality Score >= 60:",
-              (
-                  pd.to_numeric(
-                      df["QUALITY_SCORE"],
-                      errors="coerce",
-                  )
-                  >= 60
-              ).sum(),
+              int(
+                  (quality >= 60).sum()
+              ),
           )
 
           print(
@@ -338,24 +463,23 @@ jobs:
 
 
       # ======================================================
-      # 14. VALIDAR BASE TÉCNICA CONGELADA
+      # 16. VALIDAR BASE TÉCNICA ATUAL
       # ======================================================
       #
-      # O técnico permanece no Cell06B congelado.
+      # ETAPA TRANSITÓRIA.
       #
-      # Não tentamos executar build_technical_prices.py aqui,
-      # porque o builder atual depende do checkpoint original
-      # existente no ambiente de pesquisa/Google Drive.
+      # Neste momento o workflow ainda consome:
       #
-      # O arquivo data/technical_prices.csv deve permanecer
-      # versionado no repositório enquanto a camada técnica
-      # LIVE não for construída.
+      # data/technical_prices.csv
+      #
+      # A substituição pela camada técnica LIVE será feita
+      # depois que a cadeia B3 LIVE estiver estável.
       # ======================================================
 
-      - name: Validate frozen technical input
+      - name: Validate current technical input
         run: |
           echo "=========================================="
-          echo "AUDITORIA TÉCNICA — CELL06B"
+          echo "AUDITORIA TÉCNICA ATUAL"
           echo "=========================================="
 
           FILE="data/technical_prices.csv"
@@ -363,9 +487,6 @@ jobs:
           if [ ! -f "$FILE" ]; then
             echo "ERRO:"
             echo "$FILE não encontrado."
-            echo ""
-            echo "A base técnica Cell06B precisa estar"
-            echo "presente no repositório."
             exit 1
           fi
 
@@ -406,7 +527,8 @@ jobs:
           ]
 
           missing = [
-              c for c in required
+              c
+              for c in required
               if c not in df.columns
           ]
 
@@ -432,21 +554,17 @@ jobs:
           )
 
           print(
-              "Fonte técnica: CELL06B_FROZEN"
-          )
-
-          print(
               "Technical Score: NÃO"
           )
 
           print(
-              "Base técnica: OK"
+              "Base técnica atual: OK"
           )
           PY
 
 
       # ======================================================
-      # 15. VERIFICAR ENTRADAS DO MAIN
+      # 17. VERIFICAR ENTRADAS DO MAIN
       # ======================================================
 
       - name: Check engine input data
@@ -471,7 +589,7 @@ jobs:
           fi
 
           echo "Fundamental LIVE: OK"
-          echo "Técnico Cell06B: OK"
+          echo "Técnico atual: OK"
 
           echo ""
           ls -lh "$FUNDAMENTAL"
@@ -479,7 +597,7 @@ jobs:
 
 
       # ======================================================
-      # 16. EXECUTAR MOTOR
+      # 18. EXECUTAR MOTOR
       # ======================================================
 
       - name: Run B3 Investment Engine
@@ -492,7 +610,7 @@ jobs:
 
 
       # ======================================================
-      # 17. VALIDAR RESULTADO DO MOTOR
+      # 19. VALIDAR RESULTADO DO MOTOR
       # ======================================================
 
       - name: Validate engine results
@@ -528,7 +646,7 @@ jobs:
 
 
       # ======================================================
-      # 18. GERAR RELATÓRIO FINAL
+      # 20. GERAR RELATÓRIO FINAL
       # ======================================================
 
       - name: Generate final report
@@ -537,7 +655,7 @@ jobs:
 
 
       # ======================================================
-      # 19. MOSTRAR ARQUIVOS GERADOS
+      # 21. MOSTRAR ARQUIVOS GERADOS
       # ======================================================
 
       - name: Show generated files
@@ -550,42 +668,66 @@ jobs:
           if [ -d "data/live/cvm" ]; then
             echo ""
             echo "CVM:"
-            find data/live/cvm -maxdepth 2 -type f -print | sort
+            find data/live/cvm \
+              -maxdepth 2 \
+              -type f \
+              -print \
+              | sort
           fi
 
           if [ -d "data/live/b3" ]; then
             echo ""
             echo "B3:"
-            find data/live/b3 -maxdepth 3 -type f -print | sort
+            find data/live/b3 \
+              -maxdepth 3 \
+              -type f \
+              -print \
+              | sort
           fi
 
           if [ -d "data/live/fundamental" ]; then
             echo ""
             echo "FUNDAMENTAL LIVE:"
-            find data/live/fundamental -maxdepth 2 -type f -print | sort
+            find data/live/fundamental \
+              -maxdepth 2 \
+              -type f \
+              -print \
+              | sort
           fi
 
           if [ -d "final_report" ]; then
             echo ""
             echo "FINAL REPORT:"
-            find final_report -maxdepth 2 -type f -print | sort
+            find final_report \
+              -maxdepth 2 \
+              -type f \
+              -print \
+              | sort
           fi
 
           if [ -d "checkpoints" ]; then
             echo ""
             echo "CHECKPOINTS:"
-            find checkpoints -maxdepth 2 -type f -print | sort
+            find checkpoints \
+              -maxdepth 2 \
+              -type f \
+              -print \
+              | sort
           fi
 
           if [ -d "logs" ]; then
             echo ""
             echo "LOGS:"
-            find logs -maxdepth 2 -type f -print | sort
+            find logs \
+              -maxdepth 2 \
+              -type f \
+              -print \
+              | sort
           fi
 
 
       # ======================================================
-      # 20. SALVAR RELATÓRIO FINAL
+      # 22. SALVAR RELATÓRIO FINAL
       # ======================================================
 
       - name: Upload final report
@@ -600,7 +742,7 @@ jobs:
 
 
       # ======================================================
-      # 21. SALVAR MANIFESTOS LIVE
+      # 23. SALVAR MANIFESTOS LIVE
       # ======================================================
 
       - name: Upload LIVE manifests
@@ -616,7 +758,7 @@ jobs:
 
 
       # ======================================================
-      # 22. SALVAR CHECKPOINTS
+      # 24. SALVAR CHECKPOINTS
       # ======================================================
 
       - name: Upload checkpoints
@@ -631,7 +773,7 @@ jobs:
 
 
       # ======================================================
-      # 23. SALVAR LOGS SE HOUVER FALHA
+      # 25. SALVAR LOGS SE HOUVER FALHA
       # ======================================================
 
       - name: Upload logs on failure
