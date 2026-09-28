@@ -1,23 +1,23 @@
 """
 B3 INVESTMENT ENGINE
-BUILD B3 MARKET HISTORY — V1
+BUILD B3 MARKET HISTORY — V2
 
 Objetivo
 --------
 Construir a base oficial normalizada de negociação utilizada pelo
 B3 Investability Engine.
 
-Fontes:
-1. COTAHIST anual oficial B3 — histórico encerrado;
-2. BVBG.186.01 / Simplified Price Report — ano corrente.
+Fontes
+------
+1. COTAHIST anual oficial B3
+   - histórico de negociação;
+   - volume financeiro oficial (VOLTOT).
 
-Saída:
-data/live/b3/market_history_live.csv
-
-Colunas mínimas:
-TICKER
-DATA
-VOLTOT
+2. BVBG.186.01 / Simplified Price Report — Equities
+   - ano corrente;
+   - XML oficial B3;
+   - utilizado para preços e confirmação da data/ticker;
+   - NÃO utilizado para inventar volume financeiro.
 
 IMPORTANTE
 ----------
@@ -30,9 +30,34 @@ Ele NÃO:
 - altera o limite de R$ 6 milhões;
 - cria Technical Score;
 - cria ranking;
-- substitui o Investability Engine.
+- substitui o Investability Engine;
+- converte quantidade de negócios em volume financeiro.
 
-Sua única função é normalizar os dados oficiais B3.
+Metodologia congelada:
+- histórico mínimo: 10 anos;
+- liquidez média diária mínima: R$ 6 milhões.
+
+O BVBG.186.01 real foi validado como:
+ZIP externo
+    -> ZIP interno
+        -> XML BVBG.186.01
+
+Campos observados no XML:
+TradDt / Dt
+TckrSymb
+FrstPric
+MinPric
+MaxPric
+TradAvrgPric
+LastPric
+RglrTxsQty
+
+O arquivo NÃO contém VOLTOT.
+
+Consequentemente:
+- COTAHIST continua sendo a fonte oficial de VOLTOT;
+- SPRE fornece preços do ano corrente;
+- ausência de VOLTOT no SPRE nunca é mascarada.
 """
 
 from __future__ import annotations
@@ -42,6 +67,7 @@ import json
 import re
 import sys
 import zipfile
+import xml.etree.ElementTree as ET
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +97,10 @@ OUTPUT_FILE = (
     B3_DIR / "market_history_live.csv"
 )
 
+SPRE_PRICE_FILE = (
+    B3_DIR / "spre_prices_live.csv"
+)
+
 MANIFEST_FILE = (
     B3_DIR / "market_history_manifest.json"
 )
@@ -96,7 +126,7 @@ SPRE_PREFIX = "SPRE"
 VALID_MARKET_TYPE = "010"
 
 METHODOLOGY_VERSION = (
-    "B3_MARKET_HISTORY_V1"
+    "B3_MARKET_HISTORY_V2_XML"
 )
 
 
@@ -186,6 +216,45 @@ def normalize_ticker(
     return value
 
 
+def local_name(
+    tag: str,
+) -> str:
+
+    if "}" in tag:
+        return tag.rsplit(
+            "}",
+            1,
+        )[1]
+
+    return tag
+
+
+def safe_float(
+    value,
+):
+
+    if value is None:
+        return None
+
+    value = str(
+        value
+    ).strip()
+
+    if not value:
+        return None
+
+    try:
+        return float(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
 # ============================================================
 # COTAHIST — FIXED WIDTH
 # ============================================================
@@ -195,63 +264,59 @@ def parse_cotahist_line(
 ):
 
     """
-    Layout necessário da série histórica B3.
+    Layout oficial COTAHIST necessário ao projeto.
 
     Campos utilizados:
 
-    TIPREG:
-        posição 01-02
+    TIPREG
+        posições 1-2
 
-    DATA:
-        posição 03-10
+    DATA
+        posições 3-10
 
-    CODNEG:
-        posição 13-24
+    CODNEG
+        posições 13-24
 
-    TPMERC:
-        posição 25-27
+    TPMERC
+        posições 25-27
 
-    VOLTOT:
-        posição 171-188
-        duas casas decimais implícitas.
-
-    Mantemos apenas:
-    TIPREG = 01
-    TPMERC = 010
+    VOLTOT
+        posições 171-188
+        valor com 2 casas decimais implícitas
     """
 
     if len(line) < 188:
         return None
 
-    tipreg = line[
-        0:2
-    ]
+    tipreg = (
+        line[0:2]
+        .strip()
+    )
 
     if tipreg != "01":
         return None
 
-    data_raw = line[
-        2:10
-    ]
+    data_raw = (
+        line[2:10]
+        .strip()
+    )
 
     ticker = (
-        line[
-            12:24
-        ]
+        line[12:24]
         .strip()
         .upper()
     )
 
-    tpmerc = line[
-        24:27
-    ]
+    tpmerc = (
+        line[24:27]
+        .strip()
+    )
 
     if tpmerc != VALID_MARKET_TYPE:
         return None
 
-    voltot_raw = line[
-        170:188
-    ]
+    if not ticker:
+        return None
 
     try:
 
@@ -261,16 +326,25 @@ def parse_cotahist_line(
             errors="raise",
         )
 
+    except Exception:
+        return None
+
+    vol_raw = (
+        line[170:188]
+        .strip()
+    )
+
+    try:
+
         voltot = (
-            int(voltot_raw)
+            int(vol_raw)
             / 100.0
         )
 
-    except Exception:
-
-        return None
-
-    if not ticker:
+    except (
+        TypeError,
+        ValueError,
+    ):
         return None
 
     return {
@@ -284,15 +358,47 @@ def parse_cotahist_line(
             float(voltot),
 
         "SOURCE":
-            "COTAHIST",
+            "B3_COTAHIST",
     }
+
+
+def parse_cotahist_text(
+    text: str,
+) -> pd.DataFrame:
+
+    records = []
+
+    for line in text.splitlines():
+
+        row = parse_cotahist_line(
+            line
+        )
+
+        if row is not None:
+
+            records.append(
+                row
+            )
+
+    if not records:
+
+        return pd.DataFrame(
+            columns=[
+                "TICKER",
+                "DATA",
+                "VOLTOT",
+                "SOURCE",
+            ]
+        )
+
+    return pd.DataFrame(
+        records
+    )
 
 
 def parse_cotahist_zip(
     path: Path,
 ) -> pd.DataFrame:
-
-    rows = []
 
     try:
 
@@ -301,85 +407,124 @@ def parse_cotahist_zip(
             "r",
         ) as archive:
 
-            names = archive.namelist()
+            names = [
+                name
+                for name
+                in archive.namelist()
+                if not name.endswith("/")
+            ]
 
             if not names:
 
                 raise DataInsufficientError(
-                    f"ZIP vazio: {path}"
+                    "COTAHIST vazio: "
+                    f"{path}"
                 )
 
-            data_name = names[0]
+            candidates = [
+                name
+                for name
+                in names
+                if name.lower().endswith(
+                    ".txt"
+                )
+            ]
 
-            with archive.open(
-                data_name,
-                "r",
-            ) as file:
+            if candidates:
 
-                for raw in file:
+                name = candidates[0]
 
-                    try:
+            else:
 
-                        line = raw.decode(
-                            "latin-1"
-                        )
+                name = names[0]
 
-                    except Exception:
-
-                        continue
-
-                    parsed = (
-                        parse_cotahist_line(
-                            line
-                        )
-                    )
-
-                    if parsed is not None:
-
-                        rows.append(
-                            parsed
-                        )
+            payload = archive.read(
+                name
+            )
 
     except zipfile.BadZipFile as exc:
 
         raise DataInsufficientError(
-            f"COTAHIST inválido: {path}"
+            "COTAHIST ZIP inválido: "
+            f"{path}"
         ) from exc
 
-    return pd.DataFrame(
-        rows
+    text = None
+
+    for encoding in (
+        "latin-1",
+        "utf-8",
+        "utf-8-sig",
+    ):
+
+        try:
+
+            text = payload.decode(
+                encoding
+            )
+
+            break
+
+        except UnicodeDecodeError:
+            continue
+
+    if text is None:
+
+        raise DataInsufficientError(
+            "Não foi possível decodificar "
+            f"COTAHIST: {path}"
+        )
+
+    return parse_cotahist_text(
+        text
     )
 
-
-# ============================================================
-# COTAHIST — HISTÓRICO
-# ============================================================
 
 def load_historical_cotahist():
 
     if not HISTORICAL_DIR.exists():
 
         raise DataInsufficientError(
-            "Diretório histórico B3 "
-            "não encontrado: "
+            "Diretório COTAHIST não "
+            "encontrado: "
             f"{HISTORICAL_DIR}"
         )
 
     files = sorted(
-        HISTORICAL_DIR.glob(
-            "COTAHIST_A*.ZIP"
+        list(
+            HISTORICAL_DIR.glob(
+                "COTAHIST_A*.ZIP"
+            )
         )
-    )
-
-    if not files:
-
-        files = sorted(
+        +
+        list(
             HISTORICAL_DIR.glob(
                 "COTAHIST_A*.zip"
             )
         )
+    )
 
-    if not files:
+    unique_files = []
+    seen = set()
+
+    for path in files:
+
+        resolved = str(
+            path.resolve()
+        )
+
+        if resolved in seen:
+            continue
+
+        seen.add(
+            resolved
+        )
+
+        unique_files.append(
+            path
+        )
+
+    if not unique_files:
 
         raise DataInsufficientError(
             "Nenhum COTAHIST anual "
@@ -387,10 +532,9 @@ def load_historical_cotahist():
         )
 
     frames = []
-
     years_loaded = []
 
-    for path in files:
+    for path in unique_files:
 
         match = re.search(
             r"COTAHIST_A(\d{4})",
@@ -404,26 +548,12 @@ def load_historical_cotahist():
             match.group(1)
         )
 
-        # Ano corrente é tratado pela
-        # camada diária BVBG.186.01.
-        if year >= CURRENT_YEAR:
-            continue
-
-        print(
-            f"  COTAHIST {year}: "
-            f"{path.name}"
-        )
-
         df = parse_cotahist_zip(
             path
         )
 
         if df.empty:
-
-            raise DataInsufficientError(
-                "COTAHIST sem registros "
-                f"válidos: {path}"
-            )
+            continue
 
         frames.append(
             df
@@ -436,8 +566,8 @@ def load_historical_cotahist():
     if not frames:
 
         raise DataInsufficientError(
-            "Nenhum histórico COTAHIST "
-            "válido foi carregado."
+            "Nenhum COTAHIST válido "
+            "foi carregado."
         )
 
     result = pd.concat(
@@ -445,19 +575,67 @@ def load_historical_cotahist():
         ignore_index=True,
     )
 
+    result["TICKER"] = (
+        result["TICKER"]
+        .map(normalize_ticker)
+    )
+
+    result["DATA"] = (
+        pd.to_datetime(
+            result["DATA"],
+            errors="coerce",
+        )
+    )
+
+    result["VOLTOT"] = (
+        pd.to_numeric(
+            result["VOLTOT"],
+            errors="coerce",
+        )
+    )
+
+    result = result.dropna(
+        subset=[
+            "TICKER",
+            "DATA",
+            "VOLTOT",
+        ]
+    )
+
+    result = result[
+        result["VOLTOT"] >= 0
+    ].copy()
+
+    result = (
+        result
+        .sort_values(
+            [
+                "DATA",
+                "TICKER",
+            ]
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    years_loaded = sorted(
+        set(
+            years_loaded
+        )
+    )
+
     return (
         result,
-        sorted(
-            set(years_loaded)
-        ),
+        years_loaded,
     )
 
 
 # ============================================================
-# SPRE — HELPERS
+# SPRE — ZIP / XML
 # ============================================================
 
-def _read_zip_payload(
+def _read_outer_zip(
     path: Path,
 ) -> bytes:
 
@@ -478,292 +656,379 @@ def _read_zip_payload(
             if not names:
 
                 raise DataInsufficientError(
-                    f"SPRE vazio: {path}"
+                    "SPRE externo vazio: "
+                    f"{path.name}"
                 )
 
+            preferred = [
+                name
+                for name
+                in names
+                if name.lower().endswith(
+                    (
+                        ".zip",
+                        ".xml",
+                    )
+                )
+            ]
+
+            name = (
+                preferred[0]
+                if preferred
+                else names[0]
+            )
+
             return archive.read(
-                names[0]
+                name
             )
 
     except zipfile.BadZipFile as exc:
 
         raise DataInsufficientError(
-            f"SPRE inválido: {path}"
+            "SPRE externo inválido: "
+            f"{path}"
         ) from exc
 
 
-def _decode_text(
-    payload: bytes,
-) -> str:
+def _extract_spre_xml(
+    path: Path,
+) -> bytes:
 
-    for encoding in (
-        "utf-8-sig",
-        "utf-8",
-        "latin-1",
-    ):
+    """
+    Estrutura real validada:
 
-        try:
+    SPREYYMMDD.zip
+        -> SPREYYMMDD.zip
+            -> BVBG.186.01_....xml
 
-            return payload.decode(
-                encoding
-            )
+    Também aceita XML diretamente dentro
+    do ZIP externo caso a B3 altere apenas
+    o empacotamento, sem alterar o conteúdo.
+    """
 
-        except UnicodeDecodeError:
-            pass
-
-    raise DataInsufficientError(
-        "Não foi possível decodificar "
-        "arquivo SPRE."
+    payload = _read_outer_zip(
+        path
     )
 
+    depth = 0
 
-def _read_delimited_text(
-    text: str,
-) -> pd.DataFrame:
+    while payload[:2] == b"PK":
 
-    candidates = [
-        ";",
-        ",",
-        "\t",
-        "|",
-    ]
+        depth += 1
 
-    best = None
+        if depth > 4:
 
-    for separator in candidates:
+            raise DataInsufficientError(
+                "SPRE possui níveis ZIP "
+                "excessivos."
+            )
 
         try:
 
-            df = pd.read_csv(
-                io.StringIO(text),
-                sep=separator,
-                low_memory=False,
-            )
+            with zipfile.ZipFile(
+                io.BytesIO(
+                    payload
+                ),
+                "r",
+            ) as nested:
 
-        except Exception:
+                names = [
+                    name
+                    for name
+                    in nested.namelist()
+                    if not name.endswith("/")
+                ]
+
+                if not names:
+
+                    raise DataInsufficientError(
+                        "ZIP interno SPRE vazio."
+                    )
+
+                xml_candidates = [
+                    name
+                    for name
+                    in names
+                    if name.lower().endswith(
+                        ".xml"
+                    )
+                ]
+
+                zip_candidates = [
+                    name
+                    for name
+                    in names
+                    if name.lower().endswith(
+                        ".zip"
+                    )
+                ]
+
+                if xml_candidates:
+
+                    payload = nested.read(
+                        xml_candidates[0]
+                    )
+
+                    break
+
+                if zip_candidates:
+
+                    payload = nested.read(
+                        zip_candidates[0]
+                    )
+
+                    continue
+
+                payload = nested.read(
+                    names[0]
+                )
+
+        except zipfile.BadZipFile as exc:
+
+            raise DataInsufficientError(
+                "ZIP interno SPRE inválido."
+            ) from exc
+
+    stripped = payload.lstrip()
+
+    if not stripped.startswith(
+        b"<?xml"
+    ) and not stripped.startswith(
+        b"<"
+    ):
+
+        raise DataInsufficientError(
+            "Conteúdo SPRE não é XML."
+        )
+
+    return payload
+
+
+# ============================================================
+# SPRE — XML BVBG.186.01
+# ============================================================
+
+def _element_values(
+    element,
+) -> dict:
+
+    values = {}
+
+    for child in element.iter():
+
+        if child is element:
             continue
 
-        if (
-            best is None
-            or len(df.columns)
-            >
-            len(best.columns)
-        ):
-
-            best = df
-
-    if (
-        best is None
-        or len(best.columns) <= 1
-    ):
-
-        raise DataInsufficientError(
-            "Layout SPRE não reconhecido."
+        key = local_name(
+            child.tag
         )
 
-    return best
+        text = (
+            child.text or ""
+        ).strip()
+
+        if text:
+
+            values[key] = text
+
+    return values
 
 
-def _normalize_column_name(
-    value,
-) -> str:
-
-    value = (
-        str(value)
-        .strip()
-        .upper()
-    )
-
-    value = (
-        value
-        .replace(" ", "_")
-        .replace("-", "_")
-        .replace("/", "_")
-        .replace(".", "_")
-    )
-
-    while "__" in value:
-        value = value.replace(
-            "__",
-            "_",
-        )
-
-    return value
-
-
-def _find_column(
-    columns,
-    candidates,
-):
-
-    normalized = {
-        _normalize_column_name(
-            column
-        ):
-        column
-
-        for column
-        in columns
-    }
-
-    for candidate in candidates:
-
-        key = (
-            _normalize_column_name(
-                candidate
-            )
-        )
-
-        if key in normalized:
-
-            return normalized[
-                key
-            ]
-
-    return None
-
-
-# ============================================================
-# SPRE — NORMALIZAÇÃO
-# ============================================================
-
-def normalize_spre_dataframe(
-    df: pd.DataFrame,
-    trade_date: pd.Timestamp,
+def parse_spre_xml(
+    payload: bytes,
+    filename_trade_date: pd.Timestamp,
 ) -> pd.DataFrame:
 
     """
-    O layout BVBG.186.01 pode sofrer alterações de nomes de
-    cabeçalho ao longo do tempo.
+    Parser streaming.
 
-    Este parser NÃO inventa valores. Ele somente aceita campos
-    identificados explicitamente.
+    O XML real pode ter dezenas de MB.
+    Portanto não carregamos a árvore inteira
+    na memória.
 
-    Para Investability precisamos:
-    - ticker;
-    - data;
-    - volume financeiro negociado.
+    Unidade lógica observada:
+        PricRpt
 
-    Caso a B3 não forneça campo compatível, o processo falha
-    como DATA_INSUFFICIENT.
+    Campos extraídos:
+        TradDt/Dt
+        TckrSymb
+        FrstPric
+        MinPric
+        MaxPric
+        TradAvrgPric
+        LastPric
+        RglrTxsQty
     """
 
-    ticker_col = _find_column(
-        df.columns,
-        [
-            "TICKER",
-            "TCKRSYMB",
-            "TCKR_SYMB",
-            "CODNEG",
-            "CODIGO_NEGOCIACAO",
-            "SECURITY_SYMBOL",
-        ],
+    records = []
+
+    stream = io.BytesIO(
+        payload
     )
 
-    volume_col = _find_column(
-        df.columns,
-        [
-            "VOLTOT",
-            "FINANCIAL_VOLUME",
-            "FINANCIALVOLUME",
-            "FINANCIAL_VOLUME_TRADED",
-            "TRADFINVOL",
-            "TRAD_FIN_VOL",
-            "TRADFINVOLUME",
-            "TRAD_FIN_VOLUME",
-            "TOTFINVOL",
-            "TOT_FIN_VOL",
-            "VOLUME_FINANCEIRO",
-            "VOLUME_FINANCEIRO_NEGOCIADO",
-        ],
-    )
+    try:
 
-    if ticker_col is None:
-
-        raise DataInsufficientError(
-            "SPRE sem coluna de ticker "
-            "reconhecida."
+        context = ET.iterparse(
+            stream,
+            events=(
+                "end",
+            ),
         )
 
-    if volume_col is None:
+        for _, elem in context:
+
+            if local_name(
+                elem.tag
+            ) != "PricRpt":
+
+                continue
+
+            values = _element_values(
+                elem
+            )
+
+            ticker = normalize_ticker(
+                values.get(
+                    "TckrSymb"
+                )
+            )
+
+            if not ticker:
+
+                elem.clear()
+                continue
+
+            date_value = (
+                values.get(
+                    "Dt"
+                )
+                or
+                values.get(
+                    "TradDt"
+                )
+            )
+
+            if date_value:
+
+                trade_date = pd.to_datetime(
+                    date_value,
+                    errors="coerce",
+                )
+
+            else:
+
+                trade_date = (
+                    filename_trade_date
+                )
+
+            if pd.isna(
+                trade_date
+            ):
+
+                elem.clear()
+                continue
+
+            records.append(
+                {
+                    "TICKER":
+                        ticker,
+
+                    "DATA":
+                        trade_date,
+
+                    "FIRST_PRICE":
+                        safe_float(
+                            values.get(
+                                "FrstPric"
+                            )
+                        ),
+
+                    "LOW_PRICE":
+                        safe_float(
+                            values.get(
+                                "MinPric"
+                            )
+                        ),
+
+                    "HIGH_PRICE":
+                        safe_float(
+                            values.get(
+                                "MaxPric"
+                            )
+                        ),
+
+                    "AVG_PRICE":
+                        safe_float(
+                            values.get(
+                                "TradAvrgPric"
+                            )
+                        ),
+
+                    "LAST_PRICE":
+                        safe_float(
+                            values.get(
+                                "LastPric"
+                            )
+                        ),
+
+                    "REGULAR_TRADES_QTY":
+                        safe_float(
+                            values.get(
+                                "RglrTxsQty"
+                            )
+                        ),
+
+                    "SOURCE":
+                        "B3_BVBG_186_01",
+                }
+            )
+
+            elem.clear()
+
+    except ET.ParseError as exc:
 
         raise DataInsufficientError(
-            "SPRE sem coluna de volume "
-            "financeiro reconhecida."
+            "XML BVBG.186.01 inválido."
+        ) from exc
+
+    if not records:
+
+        raise DataInsufficientError(
+            "Nenhum PricRpt válido foi "
+            "encontrado no BVBG.186.01."
         )
 
-    out = pd.DataFrame()
-
-    out["TICKER"] = (
-        df[ticker_col]
-        .map(normalize_ticker)
+    df = pd.DataFrame(
+        records
     )
 
-    volume_raw = (
-        df[volume_col]
-        .astype(str)
-        .str.strip()
-    )
-
-    # Tenta primeiro padrão numérico
-    # internacional.
-    volume = pd.to_numeric(
-        volume_raw,
+    df["DATA"] = pd.to_datetime(
+        df["DATA"],
         errors="coerce",
     )
 
-    # Se necessário, tenta padrão
-    # brasileiro 1.234,56.
-    missing = volume.isna()
-
-    if missing.any():
-
-        br = (
-            volume_raw[
-                missing
-            ]
-            .str.replace(
-                ".",
-                "",
-                regex=False,
-            )
-            .str.replace(
-                ",",
-                ".",
-                regex=False,
-            )
-        )
-
-        volume.loc[
-            missing
-        ] = pd.to_numeric(
-            br,
-            errors="coerce",
-        )
-
-    out["VOLTOT"] = volume
-
-    out["DATA"] = pd.Timestamp(
-        trade_date
-    ).normalize()
-
-    out["SOURCE"] = (
-        "BVBG.186.01"
-    )
-
-    out = out.dropna(
+    df = df.dropna(
         subset=[
             "TICKER",
             "DATA",
-            "VOLTOT",
         ]
     )
 
-    out = out[
-        out["VOLTOT"] >= 0
-    ]
+    # Não convertemos RglrTxsQty em VOLTOT.
+    # São grandezas diferentes.
 
-    return out
+    return (
+        df
+        .sort_values(
+            [
+                "DATA",
+                "TICKER",
+            ]
+        )
+        .reset_index(
+            drop=True
+        )
+    )
 
 
 def parse_spre_zip(
@@ -784,59 +1049,31 @@ def parse_spre_zip(
 
     date_code = match.group(1)
 
-    trade_date = pd.to_datetime(
-        date_code,
-        format="%y%m%d",
-        errors="raise",
+    filename_trade_date = (
+        pd.to_datetime(
+            date_code,
+            format="%y%m%d",
+            errors="raise",
+        )
     )
 
-    payload = _read_zip_payload(
+    payload = _extract_spre_xml(
         path
     )
 
-    # Alguns downloads podem conter
-    # outro ZIP internamente.
-    if payload[:2] == b"PK":
-
-        try:
-
-            with zipfile.ZipFile(
-                io.BytesIO(payload),
-                "r",
-            ) as nested:
-
-                names = [
-                    name
-                    for name
-                    in nested.namelist()
-                    if not name.endswith("/")
-                ]
-
-                if not names:
-
-                    raise DataInsufficientError(
-                        "SPRE interno vazio."
-                    )
-
-                payload = nested.read(
-                    names[0]
-                )
-
-        except zipfile.BadZipFile:
-            pass
-
-    text = _decode_text(
-        payload
+    df = parse_spre_xml(
+        payload,
+        filename_trade_date,
     )
 
-    raw = _read_delimited_text(
-        text
-    )
+    if df.empty:
 
-    return normalize_spre_dataframe(
-        raw,
-        trade_date,
-    )
+        raise DataInsufficientError(
+            "SPRE sem registros válidos: "
+            f"{path.name}"
+        )
+
+    return df
 
 
 # ============================================================
@@ -867,10 +1104,7 @@ def load_current_year_spre():
         )
     )
 
-    # Evita duplicidade em sistemas
-    # case-insensitive.
     unique_files = []
-
     seen = set()
 
     for path in files:
@@ -898,7 +1132,6 @@ def load_current_year_spre():
         )
 
     frames = []
-
     failures = []
 
     for path in unique_files:
@@ -929,19 +1162,35 @@ def load_current_year_spre():
 
     if not frames:
 
-        sample = (
-            failures[:5]
-        )
-
         raise DataInsufficientError(
             "Nenhum SPRE do ano corrente "
             "pôde ser normalizado. "
-            f"Amostra de erros: {sample}"
+            f"Erros: {failures[:5]}"
         )
 
     result = pd.concat(
         frames,
         ignore_index=True,
+    )
+
+    result = (
+        result
+        .sort_values(
+            [
+                "DATA",
+                "TICKER",
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "DATA",
+                "TICKER",
+            ],
+            keep="last",
+        )
+        .reset_index(
+            drop=True
+        )
     )
 
     return (
@@ -951,35 +1200,70 @@ def load_current_year_spre():
 
 
 # ============================================================
-# CONSOLIDAÇÃO
+# CONSOLIDAÇÃO COTAHIST
 # ============================================================
 
 def consolidate_market_history(
     historical: pd.DataFrame,
-    current: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    market = pd.concat(
-        [
-            historical,
-            current,
-        ],
-        ignore_index=True,
+    """
+    A base de liquidez é construída somente
+    com observações que possuem VOLTOT oficial.
+
+    O SPRE não entra nesta concatenação porque
+    BVBG.186.01 não fornece VOLTOT.
+
+    Isso evita adulteração da regra congelada
+    de liquidez média diária.
+    """
+
+    required = {
+        "TICKER",
+        "DATA",
+        "VOLTOT",
+    }
+
+    missing = (
+        required
+        -
+        set(
+            historical.columns
+        )
     )
+
+    if missing:
+
+        raise DataInsufficientError(
+            "COTAHIST sem colunas obrigatórias: "
+            f"{sorted(missing)}"
+        )
+
+    market = historical[
+        [
+            "TICKER",
+            "DATA",
+            "VOLTOT",
+        ]
+    ].copy()
 
     market["TICKER"] = (
         market["TICKER"]
         .map(normalize_ticker)
     )
 
-    market["DATA"] = pd.to_datetime(
-        market["DATA"],
-        errors="coerce",
+    market["DATA"] = (
+        pd.to_datetime(
+            market["DATA"],
+            errors="coerce",
+        )
     )
 
-    market["VOLTOT"] = pd.to_numeric(
-        market["VOLTOT"],
-        errors="coerce",
+    market["VOLTOT"] = (
+        pd.to_numeric(
+            market["VOLTOT"],
+            errors="coerce",
+        )
     )
 
     market = market.dropna(
@@ -992,25 +1276,22 @@ def consolidate_market_history(
 
     market = market[
         market["VOLTOT"] >= 0
-    ]
+    ].copy()
 
-    # Se houver mais de um registro do
-    # mesmo ticker no mesmo pregão,
-    # consolidamos o volume financeiro.
+    # Caso existam registros duplicados,
+    # soma-se o volume financeiro do mesmo
+    # ticker na mesma sessão.
+
     market = (
-        market.groupby(
+        market
+        .groupby(
             [
                 "TICKER",
                 "DATA",
             ],
             as_index=False,
-        )
-        .agg(
-            VOLTOT=(
-                "VOLTOT",
-                "sum",
-            )
-        )
+        )["VOLTOT"]
+        .sum()
     )
 
     market = (
@@ -1035,81 +1316,98 @@ def consolidate_market_history(
 
 def audit_market_history(
     market: pd.DataFrame,
+    spre_prices: pd.DataFrame,
 ):
 
     if market.empty:
 
         raise DataInsufficientError(
-            "Base B3 consolidada vazia."
+            "Market history vazio."
         )
 
-    required = {
-        "TICKER",
-        "DATA",
-        "VOLTOT",
-    }
+    if spre_prices.empty:
 
-    missing = (
-        required
-        - set(market.columns)
-    )
-
-    if missing:
-
-        raise B3MarketHistoryError(
-            "Base consolidada sem colunas: "
-            + ", ".join(
-                sorted(missing)
-            )
+        raise DataInsufficientError(
+            "SPRE de preços vazio."
         )
 
-    if market.duplicated(
-        subset=[
-            "TICKER",
-            "DATA",
-        ]
-    ).any():
-
-        raise B3MarketHistoryError(
-            "Duplicidade TICKER/DATA "
-            "na base consolidada."
-        )
-
-    latest_date = (
+    historical_latest = (
         market["DATA"].max()
     )
 
-    earliest_date = (
+    historical_first = (
         market["DATA"].min()
     )
 
-    if pd.isna(latest_date):
+    spre_latest = (
+        spre_prices["DATA"].max()
+    )
+
+    spre_first = (
+        spre_prices["DATA"].min()
+    )
+
+    if pd.isna(
+        historical_latest
+    ):
 
         raise DataInsufficientError(
-            "Última data B3 inválida."
+            "Última data COTAHIST inválida."
         )
 
-    if latest_date.year != CURRENT_YEAR:
+    if pd.isna(
+        spre_latest
+    ):
 
         raise DataInsufficientError(
-            "Ano corrente B3 ainda não "
-            "foi incorporado. "
-            f"Última data: {latest_date.date()}"
+            "Última data SPRE inválida."
+        )
+
+    if spre_latest.year != CURRENT_YEAR:
+
+        raise DataInsufficientError(
+            "Ano corrente B3 não confirmado "
+            "pelo SPRE. "
+            f"Última data: {spre_latest.date()}"
         )
 
     return {
-        "first_date":
-            earliest_date.date().isoformat(),
+        "historical_first_date":
+            historical_first.date().isoformat(),
 
-        "latest_date":
-            latest_date.date().isoformat(),
+        "historical_latest_date":
+            historical_latest.date().isoformat(),
 
-        "rows":
-            int(len(market)),
+        "spre_first_date":
+            spre_first.date().isoformat(),
 
-        "tickers":
+        "spre_latest_date":
+            spre_latest.date().isoformat(),
+
+        "liquidity_rows":
+            int(
+                len(
+                    market
+                )
+            ),
+
+        "liquidity_tickers":
             int(
                 market[
+                    "TICKER"
+                ].nunique()
+            ),
+
+        "spre_rows":
+            int(
+                len(
+                    spre_prices
+                )
+            ),
+
+        "spre_tickers":
+            int(
+                spre_prices[
                     "TICKER"
                 ].nunique()
             ),
@@ -1128,7 +1426,7 @@ def build_b3_market_history():
 
     print(
         "B3 INVESTMENT ENGINE — "
-        "BUILD MARKET HISTORY V1"
+        "BUILD MARKET HISTORY V2 XML"
     )
 
     print(
@@ -1156,17 +1454,24 @@ def build_b3_market_history():
 
     print(
         "\n[2/3] B3 ano corrente "
-        "BVBG.186.01..."
+        "BVBG.186.01 XML..."
     )
 
     (
-        current,
+        spre_prices,
         current_failures,
     ) = load_current_year_spre()
 
     print(
-        "Registros ano corrente:",
-        len(current),
+        "Registros SPRE:",
+        len(spre_prices),
+    )
+
+    print(
+        "Tickers SPRE:",
+        spre_prices[
+            "TICKER"
+        ].nunique(),
     )
 
     print(
@@ -1180,14 +1485,18 @@ def build_b3_market_history():
 
     market = (
         consolidate_market_history(
-            historical,
-            current,
+            historical
         )
     )
 
     audit = audit_market_history(
-        market
+        market,
+        spre_prices,
     )
+
+    # --------------------------------------------------------
+    # LIQUIDEZ
+    # --------------------------------------------------------
 
     write_csv_atomic(
         market[
@@ -1199,6 +1508,31 @@ def build_b3_market_history():
         ],
         OUTPUT_FILE,
     )
+
+    # --------------------------------------------------------
+    # PREÇOS SPRE
+    # --------------------------------------------------------
+
+    write_csv_atomic(
+        spre_prices[
+            [
+                "TICKER",
+                "DATA",
+                "FIRST_PRICE",
+                "LOW_PRICE",
+                "HIGH_PRICE",
+                "AVG_PRICE",
+                "LAST_PRICE",
+                "REGULAR_TRADES_QTY",
+                "SOURCE",
+            ]
+        ],
+        SPRE_PRICE_FILE,
+    )
+
+    # --------------------------------------------------------
+    # MANIFEST
+    # --------------------------------------------------------
 
     manifest = {
 
@@ -1215,7 +1549,7 @@ def build_b3_market_history():
             utc_now_iso(),
 
         "status":
-            "OK",
+            "OK_WITH_SOURCE_LIMITATION",
 
         "source_historical":
             "B3 COTAHIST",
@@ -1229,28 +1563,62 @@ def build_b3_market_history():
         "current_year":
             CURRENT_YEAR,
 
-        "first_market_date":
+        "historical_first_date":
             audit[
-                "first_date"
+                "historical_first_date"
             ],
 
-        "latest_market_date":
+        "historical_latest_date":
             audit[
-                "latest_date"
+                "historical_latest_date"
             ],
 
-        "rows":
+        "spre_first_date":
             audit[
-                "rows"
+                "spre_first_date"
             ],
 
-        "tickers":
+        "spre_latest_date":
             audit[
-                "tickers"
+                "spre_latest_date"
+            ],
+
+        "liquidity_rows":
+            audit[
+                "liquidity_rows"
+            ],
+
+        "liquidity_tickers":
+            audit[
+                "liquidity_tickers"
+            ],
+
+        "spre_rows":
+            audit[
+                "spre_rows"
+            ],
+
+        "spre_tickers":
+            audit[
+                "spre_tickers"
             ],
 
         "current_year_parse_failures":
             current_failures,
+
+        "source_limitation": {
+            "bvbg_186_01_contains_voltot":
+                False,
+
+            "regular_transactions_used_as_voltot":
+                False,
+
+            "liquidity_source":
+                "B3_COTAHIST_ONLY",
+
+            "current_year_price_source":
+                "B3_BVBG_186_01",
+        },
 
         "methodology": {
 
@@ -1273,9 +1641,14 @@ def build_b3_market_history():
                 6_000_000,
         },
 
-        "output_file":
+        "output_liquidity_file":
             str(
                 OUTPUT_FILE
+            ),
+
+        "output_spre_price_file":
+            str(
+                SPRE_PRICE_FILE
             ),
     }
 
@@ -1294,43 +1667,95 @@ def build_b3_market_history():
     )
 
     print(
-        "Primeira data:",
+        "COTAHIST primeira data:",
         audit[
-            "first_date"
+            "historical_first_date"
         ],
     )
 
     print(
-        "Última data:",
+        "COTAHIST última data:",
         audit[
-            "latest_date"
+            "historical_latest_date"
         ],
     )
 
     print(
-        "Registros:",
+        "SPRE última data:",
         audit[
-            "rows"
+            "spre_latest_date"
         ],
     )
 
     print(
-        "Tickers:",
+        "Registros liquidez:",
         audit[
-            "tickers"
+            "liquidity_rows"
         ],
     )
 
     print(
-        "Saída:",
+        "Tickers liquidez:",
+        audit[
+            "liquidity_tickers"
+        ],
+    )
+
+    print(
+        "Registros SPRE:",
+        audit[
+            "spre_rows"
+        ],
+    )
+
+    print(
+        "Tickers SPRE:",
+        audit[
+            "spre_tickers"
+        ],
+    )
+
+    print(
+        "\nATENÇÃO:"
+    )
+
+    print(
+        "BVBG.186.01 não fornece VOLTOT."
+    )
+
+    print(
+        "RglrTxsQty NÃO foi convertido "
+        "em volume financeiro."
+    )
+
+    print(
+        "Metodologia de liquidez preservada."
+    )
+
+    print(
+        "\nSaída liquidez:",
         OUTPUT_FILE,
+    )
+
+    print(
+        "Saída preços SPRE:",
+        SPRE_PRICE_FILE,
     )
 
     print(
         "=" * 72
     )
 
-    return market
+    return {
+        "market_history":
+            market,
+
+        "spre_prices":
+            spre_prices,
+
+        "audit":
+            audit,
+    }
 
 
 # ============================================================
