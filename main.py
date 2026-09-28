@@ -6,9 +6,9 @@
 #
 # Fluxo oficial:
 #
-# Fundamental Engine
+# Fundamental Engine LIVE
 #        ↓
-# Technical Timing Engine
+# Technical Timing Engine — Cell06B congelado
 #        ↓
 # Integration Engine
 #        ↓
@@ -16,6 +16,15 @@
 #
 # ARQUITETURA:
 # FUNDAMENTAL FIRST + TECHNICAL CONTEXT
+#
+# IMPORTANTE:
+#
+# - Fundamentos: LIVE
+# - Técnico: Cell06B congelado
+# - Técnico NÃO altera ranking
+# - Técnico NÃO cria score
+# - Técnico NÃO cria gatilho obrigatório
+# - Técnico NÃO recupera empresa reprovada
 # ============================================================
 
 from pathlib import Path
@@ -52,15 +61,33 @@ from integration_engine import (
 # ============================================================
 # 1. ARQUIVOS DE ENTRADA
 # ============================================================
+#
+# FUNDAMENTAL:
+# produzido por build_live_fundamental_input.py
+#
+# TÉCNICO:
+# produzido pelo build_technical_prices.py atual,
+# preservando exatamente o checkpoint Cell06B congelado.
+# ============================================================
+
+LIVE_DATA_DIR = (
+    DATA_DIR
+    / "live"
+)
+
+LIVE_FUNDAMENTAL_DIR = (
+    LIVE_DATA_DIR
+    / "fundamental"
+)
 
 FUNDAMENTAL_INPUT_FILE = (
-    DATA_DIR /
-    "fundamental_input.csv"
+    LIVE_FUNDAMENTAL_DIR
+    / "fundamental_input_live.csv"
 )
 
 TECHNICAL_PRICES_FILE = (
-    DATA_DIR /
-    "technical_prices.csv"
+    DATA_DIR
+    / "technical_prices.csv"
 )
 
 
@@ -69,28 +96,28 @@ TECHNICAL_PRICES_FILE = (
 # ============================================================
 
 FINAL_RESULTS_FILE = (
-    FINAL_REPORT_DIR /
-    "b3_investment_engine_results.csv"
+    FINAL_REPORT_DIR
+    / "b3_investment_engine_results.csv"
 )
 
 FINAL_TOP_FILE = (
-    FINAL_REPORT_DIR /
-    "b3_investment_engine_eligible.csv"
+    FINAL_REPORT_DIR
+    / "b3_investment_engine_eligible.csv"
 )
 
 RUN_SUMMARY_FILE = (
-    FINAL_REPORT_DIR /
-    "run_summary.json"
+    FINAL_REPORT_DIR
+    / "run_summary.json"
 )
 
 LATEST_CHECKPOINT_FILE = (
-    CHECKPOINTS_DIR /
-    "latest_integrated_results.csv"
+    CHECKPOINTS_DIR
+    / "latest_integrated_results.csv"
 )
 
 
 # ============================================================
-# 3. COLUNAS OBRIGATÓRIAS
+# 3. COLUNAS OBRIGATÓRIAS — FUNDAMENTAL LIVE
 # ============================================================
 
 FUNDAMENTAL_REQUIRED_COLUMNS = [
@@ -103,10 +130,18 @@ FUNDAMENTAL_REQUIRED_COLUMNS = [
 
 
 # ============================================================
+# 4. COLUNAS TÉCNICAS
+# ============================================================
+#
 # Base técnica congelada derivada do Cell06B.
 #
 # Os 7 indicadores já chegam calculados.
-# O main.py NÃO deve removê-los.
+#
+# main.py:
+#
+# - NÃO recalcula indicadores;
+# - NÃO altera indicadores;
+# - NÃO cria Technical Score.
 # ============================================================
 
 TECHNICAL_INDICATORS = [
@@ -133,7 +168,7 @@ TECHNICAL_REQUIRED_COLUMNS = [
 
 
 # ============================================================
-# 4. VALIDAR COLUNAS
+# 5. VALIDAR COLUNAS
 # ============================================================
 
 def validate_columns(
@@ -160,7 +195,7 @@ def validate_columns(
 
 
 # ============================================================
-# 5. CARREGAR FUNDAMENTOS
+# 6. CARREGAR FUNDAMENTOS LIVE
 # ============================================================
 
 def load_fundamental_input() -> pd.DataFrame:
@@ -168,11 +203,20 @@ def load_fundamental_input() -> pd.DataFrame:
     if not FUNDAMENTAL_INPUT_FILE.exists():
 
         raise FileNotFoundError(
-            "\nArquivo fundamental não encontrado:\n"
+            "\nArquivo fundamental LIVE não encontrado:\n\n"
             f"{FUNDAMENTAL_INPUT_FILE}\n\n"
-            "O pipeline de dados deverá gerar "
-            "fundamental_input.csv antes da execução."
+            "Execute primeiro:\n"
+            "build_live_fundamental_input.py"
         )
+
+    print("\n" + "=" * 80)
+    print("CARREGANDO FUNDAMENTOS LIVE")
+    print("=" * 80)
+
+    print(
+        "Arquivo:",
+        FUNDAMENTAL_INPUT_FILE,
+    )
 
     df = pd.read_csv(
         FUNDAMENTAL_INPUT_FILE,
@@ -190,7 +234,7 @@ def load_fundamental_input() -> pd.DataFrame:
     validate_columns(
         df,
         FUNDAMENTAL_REQUIRED_COLUMNS,
-        "fundamental_input.csv",
+        "fundamental_input_live.csv",
     )
 
     df["TICKER"] = (
@@ -200,6 +244,35 @@ def load_fundamental_input() -> pd.DataFrame:
         .str.upper()
     )
 
+    numeric_columns = [
+        "QUALITY_SCORE",
+        "HISTORY_YEARS",
+        "AVG_DAILY_LIQUIDITY_BRL",
+        "VALUATION_SCORE",
+    ]
+
+    if "FUNDAMENTAL_SCORE" in df.columns:
+        numeric_columns.append(
+            "FUNDAMENTAL_SCORE"
+        )
+
+    for column in numeric_columns:
+
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+
+    df = df.dropna(
+        subset=[
+            "TICKER",
+            "QUALITY_SCORE",
+            "HISTORY_YEARS",
+            "AVG_DAILY_LIQUIDITY_BRL",
+            "VALUATION_SCORE",
+        ]
+    ).copy()
+
     if df["TICKER"].duplicated().any():
 
         duplicated = (
@@ -207,7 +280,7 @@ def load_fundamental_input() -> pd.DataFrame:
                 df["TICKER"].duplicated(
                     keep=False
                 ),
-                "TICKER"
+                "TICKER",
             ]
             .drop_duplicates()
             .tolist()
@@ -215,22 +288,36 @@ def load_fundamental_input() -> pd.DataFrame:
 
         raise ValueError(
             "Tickers duplicados em "
-            "fundamental_input.csv: "
+            "fundamental_input_live.csv: "
             f"{duplicated}"
         )
+
+    print(
+        "Empresas fundamentais LIVE:",
+        len(df),
+    )
+
+    print(
+        "Tickers únicos:",
+        df["TICKER"].nunique(),
+    )
 
     return df
 
 
 # ============================================================
-# 6. CARREGAR BASE TÉCNICA
+# 7. CARREGAR BASE TÉCNICA
 # ============================================================
 #
 # IMPORTANTE:
 #
-# Esta função NÃO recalcula indicadores.
-# Ela apenas carrega e valida os valores congelados
-# provenientes do Cell06B.
+# A etapa técnica ainda utiliza o checkpoint Cell06B congelado.
+#
+# Esta função:
+#
+# - NÃO recalcula indicadores;
+# - NÃO altera segmentação;
+# - NÃO preenche indicadores ausentes.
 # ============================================================
 
 def load_technical_prices() -> pd.DataFrame:
@@ -238,11 +325,25 @@ def load_technical_prices() -> pd.DataFrame:
     if not TECHNICAL_PRICES_FILE.exists():
 
         raise FileNotFoundError(
-            "\nArquivo técnico não encontrado:\n"
+            "\nArquivo técnico não encontrado:\n\n"
             f"{TECHNICAL_PRICES_FILE}\n\n"
-            "O pipeline técnico deverá gerar "
-            "technical_prices.csv antes da execução."
+            "Execute primeiro:\n"
+            "build_technical_prices.py"
         )
+
+    print("\n" + "=" * 80)
+    print("CARREGANDO CONTEXTO TÉCNICO")
+    print("=" * 80)
+
+    print(
+        "Fonte técnica:",
+        "CELL06B_FROZEN",
+    )
+
+    print(
+        "Arquivo:",
+        TECHNICAL_PRICES_FILE,
+    )
 
     df = pd.read_csv(
         TECHNICAL_PRICES_FILE,
@@ -318,11 +419,21 @@ def load_technical_prices() -> pd.DataFrame:
         )
     )
 
+    print(
+        "Registros técnicos:",
+        len(df),
+    )
+
+    print(
+        "Tickers técnicos:",
+        df["TICKER"].nunique(),
+    )
+
     return df
 
 
 # ============================================================
-# 7. EXECUTAR FUNDAMENTAL ENGINE
+# 8. EXECUTAR FUNDAMENTAL ENGINE
 # ============================================================
 
 def run_fundamental_engine(
@@ -358,21 +469,7 @@ def run_fundamental_engine(
 
 
 # ============================================================
-# 8. SELECIONAR DADOS TÉCNICOS DO TICKER
-# ============================================================
-#
-# DIFERENÇA IMPORTANTE:
-#
-# Antes:
-# main.py entregava somente OHLC.
-#
-# Agora:
-# entrega também:
-# - CD_CVM
-# - TECH_SEGMENT_ID
-# - os 7 indicadores congelados
-#
-# Nenhum indicador é recalculado aqui.
+# 9. SELECIONAR DADOS TÉCNICOS DO TICKER
 # ============================================================
 
 def get_ticker_prices(
@@ -408,7 +505,7 @@ def get_ticker_prices(
 
 
 # ============================================================
-# 9. PROCESSAR UMA EMPRESA
+# 10. PROCESSAR UMA EMPRESA
 # ============================================================
 
 def process_company(
@@ -481,7 +578,7 @@ def process_company(
 
 
 # ============================================================
-# 10. EXECUTAR SISTEMA COMPLETO
+# 11. EXECUTAR SISTEMA COMPLETO
 # ============================================================
 
 def run_engine():
@@ -520,7 +617,7 @@ def run_engine():
     )
 
     print(
-        "Indicadores técnicos congelados:",
+        "Indicadores técnicos:",
         len(TECHNICAL_INDICATORS)
     )
 
@@ -584,12 +681,12 @@ def run_engine():
     )
 
     # ========================================================
-    # 11. RANKING
+    # 12. RANKING
     # ========================================================
     #
-    # O ranking continua 100% FUNDAMENTAL.
+    # Ranking continua 100% FUNDAMENTAL.
     #
-    # Nenhum indicador técnico participa da ordenação.
+    # Técnico NÃO participa da ordenação.
     # ========================================================
 
     results_df[
@@ -654,8 +751,22 @@ def run_engine():
         ] = rank
 
     # ========================================================
-    # 12. TESTES DE INTEGRIDADE
+    # 13. TESTES DE INTEGRIDADE
     # ========================================================
+
+    required_integrity_columns = [
+        "TECHNICAL_SCORE",
+        "MANDATORY_TRIGGER",
+        "VALIDATED_OOS_TRIGGER",
+        "FUNDAMENTAL_APPROVED",
+        "ELIGIBLE",
+    ]
+
+    validate_columns(
+        results_df,
+        required_integrity_columns,
+        "resultado integrado",
+    )
 
     technical_score_violation = (
         results_df[
@@ -705,32 +816,37 @@ def run_engine():
 
     ).sum()
 
-    assert (
-        technical_score_violation
-        ==
-        0
-    )
+    if technical_score_violation != 0:
 
-    assert (
-        mandatory_trigger_violation
-        ==
-        0
-    )
+        raise RuntimeError(
+            "Violação metodológica: "
+            "Technical Score foi criado."
+        )
 
-    assert (
-        oos_trigger_violation
-        ==
-        0
-    )
+    if mandatory_trigger_violation != 0:
 
-    assert (
-        rescue_violation
-        ==
-        0
-    )
+        raise RuntimeError(
+            "Violação metodológica: "
+            "gatilho técnico obrigatório encontrado."
+        )
+
+    if oos_trigger_violation != 0:
+
+        raise RuntimeError(
+            "Violação metodológica: "
+            "gatilho OOS encontrado."
+        )
+
+    if rescue_violation != 0:
+
+        raise RuntimeError(
+            "Violação metodológica: "
+            "técnico recuperou empresa "
+            "fundamentalmente reprovada."
+        )
 
     # ========================================================
-    # 13. SALVAR RESULTADO COMPLETO
+    # 14. SALVAR RESULTADO COMPLETO
     # ========================================================
 
     FINAL_REPORT_DIR.mkdir(
@@ -756,7 +872,7 @@ def run_engine():
     )
 
     # ========================================================
-    # 14. SALVAR SOMENTE ELEGÍVEIS
+    # 15. SALVAR SOMENTE ELEGÍVEIS
     # ========================================================
 
     eligible_df = (
@@ -782,7 +898,7 @@ def run_engine():
     )
 
     # ========================================================
-    # 15. RESUMO DA EXECUÇÃO
+    # 16. RESUMO DA EXECUÇÃO
     # ========================================================
 
     technical_available = int(
@@ -806,6 +922,22 @@ def run_engine():
             datetime.now(
                 timezone.utc
             ).isoformat(),
+
+        "fundamental_data_mode":
+            "LIVE",
+
+        "fundamental_input_file":
+            str(
+                FUNDAMENTAL_INPUT_FILE
+            ),
+
+        "technical_data_mode":
+            "CELL06B_FROZEN",
+
+        "technical_input_file":
+            str(
+                TECHNICAL_PRICES_FILE
+            ),
 
         "companies_received":
             int(
@@ -869,7 +1001,7 @@ def run_engine():
             False,
 
         "architecture":
-            "FUNDAMENTAL_FIRST",
+            "FUNDAMENTAL_FIRST_TECHNICAL_CONTEXT",
     }
 
     with open(
@@ -886,7 +1018,7 @@ def run_engine():
         )
 
     # ========================================================
-    # 16. LOG DE ERROS
+    # 17. LOG DE ERROS
     # ========================================================
 
     if errors:
@@ -897,8 +1029,8 @@ def run_engine():
         )
 
         error_file = (
-            LOGS_DIR /
-            "processing_errors.csv"
+            LOGS_DIR
+            / "processing_errors.csv"
         )
 
         pd.DataFrame(
@@ -910,12 +1042,22 @@ def run_engine():
         )
 
     # ========================================================
-    # 17. RESULTADO
+    # 18. RESULTADO
     # ========================================================
 
     print("\n" + "=" * 80)
     print("RESULTADO DA EXECUÇÃO")
     print("=" * 80)
+
+    print(
+        "Fundamental:",
+        "LIVE",
+    )
+
+    print(
+        "Técnico:",
+        "CELL06B CONGELADO",
+    )
 
     print(
         "Empresas recebidas:",
@@ -950,11 +1092,7 @@ def run_engine():
     )
 
     print(
-        "\nFonte técnica: CELL06B CONGELADO"
-    )
-
-    print(
-        "Indicadores recalculados: NÃO"
+        "\nIndicadores recalculados: NÃO"
     )
 
     print(
@@ -974,11 +1112,11 @@ def run_engine():
     )
 
     # ========================================================
-    # 18. TOP FUNDAMENTAL
+    # 19. TOP FUNDAMENTAL
     # ========================================================
 
     print("\n" + "=" * 80)
-    print("TOP FUNDAMENTAL")
+    print("TOP FUNDAMENTAL — LIVE")
     print("=" * 80)
 
     columns = [
@@ -1018,7 +1156,7 @@ def run_engine():
     print("\n" + "=" * 80)
 
     print(
-        "✓ Fundamental Engine executado."
+        "✓ Fundamental Engine LIVE executado."
     )
 
     print(
@@ -1062,7 +1200,7 @@ def run_engine():
 
 
 # ============================================================
-# 19. EXECUÇÃO
+# 20. EXECUÇÃO
 # ============================================================
 
 if __name__ == "__main__":
