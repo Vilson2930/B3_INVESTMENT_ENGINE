@@ -28,7 +28,7 @@ jobs:
 
 
       # ======================================================
-      # 2. CONFIGURAR PYTHON
+      # 2. PYTHON
       # ======================================================
 
       - name: Setup Python
@@ -39,7 +39,7 @@ jobs:
 
 
       # ======================================================
-      # 3. INSTALAR DEPENDÊNCIAS
+      # 3. DEPENDÊNCIAS
       # ======================================================
 
       - name: Upgrade pip
@@ -52,7 +52,7 @@ jobs:
 
 
       # ======================================================
-      # 4. INFORMAÇÕES DO AMBIENTE
+      # 4. AMBIENTE
       # ======================================================
 
       - name: Environment information
@@ -68,7 +68,7 @@ jobs:
 
 
       # ======================================================
-      # 5. VALIDAR CONFIGURAÇÃO
+      # 5. CONFIGURAÇÃO
       # ======================================================
 
       - name: Validate configuration
@@ -77,7 +77,7 @@ jobs:
 
 
       # ======================================================
-      # 6. TESTAR MOTORES CONGELADOS
+      # 6. MOTORES CONGELADOS
       # ======================================================
 
       - name: Test Fundamental Engine
@@ -109,16 +109,7 @@ jobs:
 
 
       # ======================================================
-      # 8. RESTAURAR SPRE DO ANO CORRENTE
-      # ======================================================
-      #
-      # IMPORTANTE:
-      # A mesma família b3-spre-* é usada no SAVE.
-      #
-      # Assim, depois do primeiro bootstrap:
-      # - arquivos antigos são restaurados;
-      # - updater verifica somente janela recente;
-      # - somente novos pregões precisam ser baixados.
+      # 8. RESTAURAR SPRE + CURSOR DO BOOTSTRAP
       # ======================================================
 
       - name: Restore B3 current-year SPRE cache
@@ -127,21 +118,13 @@ jobs:
         with:
           path: |
             data/live/b3/current_year
-          key: b3-spre-${{ runner.os }}-${{ github.run_id }}
+          key: b3-spre-v3-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            b3-spre-${{ runner.os }}-
+            b3-spre-v3-${{ runner.os }}-
 
 
       # ======================================================
       # 9. RESTAURAR CACHE PROCESSADO V5
-      # ======================================================
-      #
-      # Partições:
-      # - COTAHIST processado;
-      # - SPRE processado;
-      # - state.json.
-      #
-      # Mesma família b3-v5-* usada no SAVE.
       # ======================================================
 
       - name: Restore B3 V5 processed cache
@@ -156,7 +139,7 @@ jobs:
 
 
       # ======================================================
-      # 10. AUDITAR CACHES RESTAURADOS
+      # 10. AUDITAR CACHE RESTAURADO
       # ======================================================
 
       - name: Audit restored B3 caches
@@ -167,6 +150,7 @@ jobs:
 
           echo ""
           echo "COTAHIST:"
+
           if [ -d "data/live/b3/cotahist" ]; then
             COUNT=$(find data/live/b3/cotahist \
               -maxdepth 1 \
@@ -174,20 +158,14 @@ jobs:
               \( -name 'COTAHIST_A*.ZIP' -o -name 'COTAHIST_A*.zip' \) \
               | wc -l)
 
-            echo "Arquivos COTAHIST restaurados: $COUNT"
-
-            find data/live/b3/cotahist \
-              -maxdepth 1 \
-              -type f \
-              \( -name 'COTAHIST_A*.ZIP' -o -name 'COTAHIST_A*.zip' \) \
-              -print \
-              | sort
+            echo "Arquivos COTAHIST: $COUNT"
           else
             echo "Nenhum COTAHIST restaurado."
           fi
 
           echo ""
           echo "SPRE:"
+
           if [ -d "data/live/b3/current_year" ]; then
             COUNT=$(find data/live/b3/current_year \
               -maxdepth 1 \
@@ -195,50 +173,17 @@ jobs:
               \( -name 'SPRE*.zip' -o -name 'SPRE*.ZIP' \) \
               | wc -l)
 
-            echo "Arquivos SPRE restaurados: $COUNT"
+            echo "Arquivos SPRE: $COUNT"
 
-            find data/live/b3/current_year \
-              -maxdepth 1 \
-              -type f \
-              \( -name 'SPRE*.zip' -o -name 'SPRE*.ZIP' \) \
-              -print \
-              | sort \
-              | tail -10
+            if [ -f "data/live/b3/current_year/.bootstrap_state.json" ]; then
+              echo ""
+              echo "Bootstrap state:"
+              cat data/live/b3/current_year/.bootstrap_state.json
+            else
+              echo "Bootstrap state: AUSENTE"
+            fi
           else
             echo "Nenhum SPRE restaurado."
-          fi
-
-          echo ""
-          echo "CACHE V5:"
-          if [ -d "data/live/b3/cache/market_history_v5" ]; then
-
-            COTA_PARTS=$(find \
-              data/live/b3/cache/market_history_v5/cotahist_parts \
-              -maxdepth 1 \
-              -type f \
-              -name '*.csv' \
-              2>/dev/null \
-              | wc -l)
-
-            SPRE_PARTS=$(find \
-              data/live/b3/cache/market_history_v5/spre_parts \
-              -maxdepth 1 \
-              -type f \
-              -name '*.csv' \
-              2>/dev/null \
-              | wc -l)
-
-            echo "Partições COTAHIST V5: $COTA_PARTS"
-            echo "Partições SPRE V5: $SPRE_PARTS"
-
-            if [ -f "data/live/b3/cache/market_history_v5/state.json" ]; then
-              echo "state.json V5: OK"
-            else
-              echo "state.json V5: AUSENTE"
-            fi
-
-          else
-            echo "Cache V5 ainda não existe."
           fi
 
           echo ""
@@ -255,7 +200,7 @@ jobs:
 
 
       # ======================================================
-      # 11. ATUALIZAR DADOS OFICIAIS CVM
+      # 11. CVM LIVE
       # ======================================================
 
       - name: Update official CVM data
@@ -272,7 +217,7 @@ jobs:
 
 
       # ======================================================
-      # 12. AUDITAR CAMADA CVM
+      # 12. AUDITAR CVM
       # ======================================================
 
       - name: Audit updated CVM data
@@ -282,48 +227,21 @@ jobs:
           echo "=========================================="
 
           if [ ! -f "data/live/cvm/cad_cia_aberta.csv" ]; then
-            echo "ERRO:"
-            echo "Cadastro CVM atualizado não encontrado."
+            echo "ERRO: cadastro CVM não encontrado."
             exit 1
           fi
 
           if [ ! -f "data/live/cvm/cvm_manifest.json" ]; then
-            echo "ERRO:"
-            echo "Manifesto CVM não encontrado."
+            echo "ERRO: manifesto CVM não encontrado."
             exit 1
           fi
 
           echo "Cadastro CVM: OK"
           echo "Manifesto CVM: OK"
 
-          echo ""
-          echo "Arquivos DFP:"
-          find data/live/cvm/dfp \
-            -maxdepth 1 \
-            -type f \
-            -print \
-            | sort || true
-
-          echo ""
-          echo "Arquivos ITR:"
-          find data/live/cvm/itr \
-            -maxdepth 1 \
-            -type f \
-            -print \
-            | sort || true
-
-          echo ""
-          echo "Manifesto:"
-          cat data/live/cvm/cvm_manifest.json
-
-          echo ""
-          echo "=========================================="
-          echo "CAMADA CVM VALIDADA"
-          echo "=========================================="
-
 
       # ======================================================
-      # 13. ATUALIZAR HISTÓRICO OFICIAL B3
+      # 13. HISTÓRICO B3
       # ======================================================
 
       - name: Update official B3 historical data
@@ -342,15 +260,9 @@ jobs:
       # ======================================================
       # 14. SALVAR COTAHIST
       # ======================================================
-      #
-      # A chave é fixa para 2026.
-      #
-      # Se já existir, actions/cache/save não precisa
-      # recriar o mesmo cache.
-      # ======================================================
 
       - name: Save B3 COTAHIST cache
-        if: success()
+        if: success() && steps.restore-cotahist.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -359,33 +271,239 @@ jobs:
 
 
       # ======================================================
-      # 15. ATUALIZAR ANO CORRENTE B3
+      # 15. B3 ANO CORRENTE — LOTE 1
       # ======================================================
 
-      - name: Update current-year B3 data
+      - name: Update current-year B3 batch 1
         run: |
           echo "=========================================="
-          echo "ATUALIZAÇÃO B3 — ANO CORRENTE"
+          echo "B3 ANO CORRENTE — LOTE 1"
           echo "=========================================="
 
-          python update_b3_current_year.py
-
-          echo "=========================================="
-          echo "B3 ANO CORRENTE ATUALIZADO"
-          echo "=========================================="
+          python -u update_b3_current_year.py
 
 
       # ======================================================
-      # 16. SALVAR SPRE IMEDIATAMENTE
+      # 16. VERIFICAR BOOTSTRAP APÓS LOTE 1
+      # ======================================================
+
+      - name: Check B3 bootstrap batch 1
+        id: batch1
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path(
+              "data/live/b3/current_year/"
+              ".bootstrap_state.json"
+          )
+
+          if not p.exists():
+              print("complete=false")
+
+              with open(
+                  "/tmp/b3_batch1.txt",
+                  "w",
+                  encoding="utf-8",
+              ) as f:
+                  f.write("false")
+
+              raise SystemExit(0)
+
+          data = json.loads(
+              p.read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          complete = bool(
+              data.get(
+                  "complete",
+                  False,
+              )
+          )
+
+          print(
+              "Bootstrap completo:",
+              complete,
+          )
+
+          with open(
+              "/tmp/b3_batch1.txt",
+              "w",
+              encoding="utf-8",
+          ) as f:
+              f.write(
+                  "true"
+                  if complete
+                  else "false"
+              )
+          PY
+
+          COMPLETE=$(cat /tmp/b3_batch1.txt)
+          echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
+
+
+      # ======================================================
+      # 17. B3 ANO CORRENTE — LOTE 2
+      # ======================================================
+
+      - name: Update current-year B3 batch 2
+        if: steps.batch1.outputs.complete != 'true'
+        run: |
+          echo "=========================================="
+          echo "B3 ANO CORRENTE — LOTE 2"
+          echo "=========================================="
+
+          python -u update_b3_current_year.py
+
+
+      # ======================================================
+      # 18. VERIFICAR BOOTSTRAP APÓS LOTE 2
+      # ======================================================
+
+      - name: Check B3 bootstrap batch 2
+        id: batch2
+        if: steps.batch1.outputs.complete != 'true'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path(
+              "data/live/b3/current_year/"
+              ".bootstrap_state.json"
+          )
+
+          complete = False
+
+          if p.exists():
+              data = json.loads(
+                  p.read_text(
+                      encoding="utf-8"
+                  )
+              )
+
+              complete = bool(
+                  data.get(
+                      "complete",
+                      False,
+                  )
+              )
+
+          print(
+              "Bootstrap completo:",
+              complete,
+          )
+
+          with open(
+              "/tmp/b3_batch2.txt",
+              "w",
+              encoding="utf-8",
+          ) as f:
+              f.write(
+                  "true"
+                  if complete
+                  else "false"
+              )
+          PY
+
+          COMPLETE=$(cat /tmp/b3_batch2.txt)
+          echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
+
+
+      # ======================================================
+      # 19. B3 ANO CORRENTE — LOTE 3
+      # ======================================================
+
+      - name: Update current-year B3 batch 3
+        if: >
+          steps.batch1.outputs.complete != 'true' &&
+          steps.batch2.outputs.complete != 'true'
+        run: |
+          echo "=========================================="
+          echo "B3 ANO CORRENTE — LOTE 3"
+          echo "=========================================="
+
+          python -u update_b3_current_year.py
+
+
+      # ======================================================
+      # 20. VERIFICAR BOOTSTRAP APÓS LOTE 3
+      # ======================================================
+
+      - name: Check B3 bootstrap final status
+        id: bootstrap
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path(
+              "data/live/b3/current_year/"
+              ".bootstrap_state.json"
+          )
+
+          complete = False
+          last_checked = None
+
+          if p.exists():
+              data = json.loads(
+                  p.read_text(
+                      encoding="utf-8"
+                  )
+              )
+
+              complete = bool(
+                  data.get(
+                      "complete",
+                      False,
+                  )
+              )
+
+              last_checked = data.get(
+                  "last_checked_date"
+              )
+
+          print(
+              "Bootstrap completo:",
+              complete,
+          )
+
+          print(
+              "Última data verificada:",
+              last_checked,
+          )
+
+          with open(
+              "/tmp/b3_bootstrap.txt",
+              "w",
+              encoding="utf-8",
+          ) as f:
+              f.write(
+                  "true"
+                  if complete
+                  else "false"
+              )
+          PY
+
+          COMPLETE=$(cat /tmp/b3_bootstrap.txt)
+
+          echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "BOOTSTRAP COMPLETE = $COMPLETE"
+
+
+      # ======================================================
+      # 21. SALVAR SPRE + CURSOR
       # ======================================================
       #
-      # MESMA FAMÍLIA DO RESTORE:
+      # IMPORTANTE:
+      # salva mesmo quando bootstrap ainda não terminou.
       #
-      # restore: b3-spre-${runner.os}-...
-      # save:    b3-spre-${runner.os}-...
-      #
-      # Portanto os arquivos baixados nesta execução
-      # serão restaurados na próxima.
+      # Assim a próxima execução continua de onde parou.
       # ======================================================
 
       - name: Save B3 current-year SPRE cache
@@ -394,14 +512,38 @@ jobs:
         with:
           path: |
             data/live/b3/current_year
-          key: b3-spre-${{ runner.os }}-${{ github.run_id }}
+          key: b3-spre-v3-${{ runner.os }}-${{ github.run_id }}
 
 
       # ======================================================
-      # 17. CONSTRUIR MARKET HISTORY LIVE — V5
+      # 22. ENCERRAR NORMALMENTE SE BOOTSTRAP AINDA ESTIVER
+      #     EM ANDAMENTO
+      # ======================================================
+
+      - name: Bootstrap progress information
+        if: steps.bootstrap.outputs.complete != 'true'
+        run: |
+          echo "=========================================="
+          echo "BOOTSTRAP B3 AINDA EM ANDAMENTO"
+          echo "=========================================="
+
+          echo ""
+          echo "Os lotes desta execução foram concluídos."
+          echo "SPRE e cursor foram salvos no cache."
+          echo ""
+          echo "A próxima execução continuará do ponto salvo."
+          echo ""
+          echo "O build NÃO será executado enquanto o"
+          echo "bootstrap não estiver completo."
+          echo "=========================================="
+
+
+      # ======================================================
+      # 23. BUILD MARKET HISTORY V5
       # ======================================================
 
       - name: Build B3 market history LIVE
+        if: steps.bootstrap.outputs.complete == 'true'
         run: |
           echo "=========================================="
           echo "BUILD B3 MARKET HISTORY LIVE — V5"
@@ -432,23 +574,15 @@ jobs:
           echo "spre_prices_live.csv: OK"
           echo "market_history_manifest.json: OK"
 
-          echo ""
-          echo "Manifesto:"
-          cat data/live/b3/market_history_manifest.json
-
 
       # ======================================================
-      # 18. SALVAR CACHE PROCESSADO V5
-      # ======================================================
-      #
-      # MESMA FAMÍLIA DO RESTORE:
-      #
-      # restore: b3-v5-${runner.os}-...
-      # save:    b3-v5-${runner.os}-...
+      # 24. SALVAR CACHE V5
       # ======================================================
 
       - name: Save B3 V5 processed cache
-        if: success()
+        if: >
+          success() &&
+          steps.bootstrap.outputs.complete == 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -457,10 +591,11 @@ jobs:
 
 
       # ======================================================
-      # 19. CONSTRUIR FUNDAMENTOS LIVE
+      # 25. FUNDAMENTAL LIVE
       # ======================================================
 
       - name: Build LIVE fundamental input
+        if: steps.bootstrap.outputs.complete == 'true'
         run: |
           echo "=========================================="
           echo "BUILD FUNDAMENTAL INPUT LIVE"
@@ -474,20 +609,16 @@ jobs:
 
 
       # ======================================================
-      # 20. AUDITAR FUNDAMENTOS LIVE
+      # 26. AUDITAR FUNDAMENTAL
       # ======================================================
 
       - name: Audit LIVE fundamental input
+        if: steps.bootstrap.outputs.complete == 'true'
         run: |
-          echo "=========================================="
-          echo "AUDITORIA FUNDAMENTAL LIVE"
-          echo "=========================================="
-
           FILE="data/live/fundamental/fundamental_input_live.csv"
 
           if [ ! -f "$FILE" ]; then
-            echo "ERRO:"
-            echo "$FILE não encontrado."
+            echo "ERRO: fundamental_input_live.csv não encontrado."
             exit 1
           fi
 
@@ -527,13 +658,12 @@ jobs:
 
           if missing:
               raise SystemExit(
-                  "ERRO: colunas ausentes no "
-                  f"fundamental LIVE: {missing}"
+                  f"ERRO: colunas ausentes: {missing}"
               )
 
           if df.empty:
               raise SystemExit(
-                  "ERRO: fundamental_input_live.csv vazio."
+                  "ERRO: fundamental LIVE vazio."
               )
 
           tickers = (
@@ -545,14 +675,8 @@ jobs:
 
           if tickers.duplicated().any():
               raise SystemExit(
-                  "ERRO: tickers duplicados no "
-                  "fundamental_input_live.csv."
+                  "ERRO: tickers duplicados."
               )
-
-          quality = pd.to_numeric(
-              df["QUALITY_SCORE"],
-              errors="coerce",
-          )
 
           print(
               "Empresas:",
@@ -565,39 +689,22 @@ jobs:
           )
 
           print(
-              "Quality Score >= 60:",
-              int(
-                  (quality >= 60).sum()
-              ),
-          )
-
-          print(
               "Fundamental LIVE: OK"
           )
           PY
 
 
       # ======================================================
-      # 21. VALIDAR BASE TÉCNICA ATUAL
+      # 27. BASE TÉCNICA ATUAL
       # ======================================================
       #
-      # TRANSITÓRIO:
-      #
-      # Fundamental já é LIVE.
-      #
-      # Técnico ainda utiliza:
-      # data/technical_prices.csv
-      #
-      # NÃO declarar robô 100% LIVE até substituirmos
-      # essa camada.
+      # TRANSITÓRIO.
+      # Técnico LIVE ainda será substituído posteriormente.
       # ======================================================
 
       - name: Validate current technical input
+        if: steps.bootstrap.outputs.complete == 'true'
         run: |
-          echo "=========================================="
-          echo "AUDITORIA TÉCNICA ATUAL"
-          echo "=========================================="
-
           FILE="data/technical_prices.csv"
 
           if [ ! -f "$FILE" ]; then
@@ -650,8 +757,7 @@ jobs:
 
           if missing:
               raise SystemExit(
-                  "ERRO: colunas técnicas ausentes: "
-                  f"{missing}"
+                  f"ERRO: colunas técnicas ausentes: {missing}"
               )
 
           if df.empty:
@@ -680,43 +786,11 @@ jobs:
 
 
       # ======================================================
-      # 22. VERIFICAR ENTRADAS DO MAIN
-      # ======================================================
-
-      - name: Check engine input data
-        run: |
-          echo "=========================================="
-          echo "ENTRADAS DO MAIN.PY"
-          echo "=========================================="
-
-          FUNDAMENTAL="data/live/fundamental/fundamental_input_live.csv"
-          TECHNICAL="data/technical_prices.csv"
-
-          if [ ! -f "$FUNDAMENTAL" ]; then
-            echo "ERRO:"
-            echo "$FUNDAMENTAL não encontrado."
-            exit 1
-          fi
-
-          if [ ! -f "$TECHNICAL" ]; then
-            echo "ERRO:"
-            echo "$TECHNICAL não encontrado."
-            exit 1
-          fi
-
-          echo "Fundamental LIVE: OK"
-          echo "Técnico atual: OK"
-
-          echo ""
-          ls -lh "$FUNDAMENTAL"
-          ls -lh "$TECHNICAL"
-
-
-      # ======================================================
-      # 23. EXECUTAR MOTOR
+      # 28. EXECUTAR MOTOR
       # ======================================================
 
       - name: Run B3 Investment Engine
+        if: steps.bootstrap.outputs.complete == 'true'
         run: |
           echo "=========================================="
           echo "EXECUTANDO B3 INVESTMENT ENGINE"
@@ -726,52 +800,42 @@ jobs:
 
 
       # ======================================================
-      # 24. VALIDAR RESULTADO
+      # 29. VALIDAR RESULTADO
       # ======================================================
 
       - name: Validate engine results
+        if: steps.bootstrap.outputs.complete == 'true'
         run: |
-          echo "=========================================="
-          echo "VALIDAÇÃO DO RESULTADO"
-          echo "=========================================="
-
           if [ ! -f "final_report/b3_investment_engine_results.csv" ]; then
-            echo "ERRO:"
-            echo "Resultado completo não encontrado."
+            echo "ERRO: resultado completo não encontrado."
             exit 1
           fi
 
           if [ ! -f "final_report/b3_investment_engine_eligible.csv" ]; then
-            echo "ERRO:"
-            echo "Arquivo de elegíveis não encontrado."
+            echo "ERRO: elegíveis não encontrados."
             exit 1
           fi
 
           if [ ! -f "final_report/run_summary.json" ]; then
-            echo "ERRO:"
-            echo "run_summary.json não encontrado."
+            echo "ERRO: run_summary.json não encontrado."
             exit 1
           fi
 
-          echo ""
-          echo "Resumo:"
-          cat final_report/run_summary.json
-
-          echo ""
           echo "Resultado do motor: OK"
 
 
       # ======================================================
-      # 25. GERAR RELATÓRIO FINAL
+      # 30. RELATÓRIO FINAL
       # ======================================================
 
       - name: Generate final report
+        if: steps.bootstrap.outputs.complete == 'true'
         run: |
           python report_generator.py
 
 
       # ======================================================
-      # 26. MOSTRAR ARQUIVOS GERADOS
+      # 31. ARQUIVOS GERADOS
       # ======================================================
 
       - name: Show generated files
@@ -781,34 +845,21 @@ jobs:
           echo "ARQUIVOS GERADOS"
           echo "=========================================="
 
-          if [ -d "data/live/cvm" ]; then
+          if [ -d "data/live/b3/current_year" ]; then
             echo ""
-            echo "CVM:"
-            find data/live/cvm \
-              -maxdepth 2 \
+            echo "SPRE:"
+            find data/live/b3/current_year \
+              -maxdepth 1 \
               -type f \
               -print \
-              | sort
+              | sort \
+              | tail -20
           fi
 
-          if [ -d "data/live/b3" ]; then
+          if [ -f "data/live/b3/current_year/.bootstrap_state.json" ]; then
             echo ""
-            echo "B3:"
-            find data/live/b3 \
-              -maxdepth 4 \
-              -type f \
-              -print \
-              | sort
-          fi
-
-          if [ -d "data/live/fundamental" ]; then
-            echo ""
-            echo "FUNDAMENTAL LIVE:"
-            find data/live/fundamental \
-              -maxdepth 2 \
-              -type f \
-              -print \
-              | sort
+            echo "BOOTSTRAP STATE:"
+            cat data/live/b3/current_year/.bootstrap_state.json
           fi
 
           if [ -d "final_report" ]; then
@@ -821,33 +872,15 @@ jobs:
               | sort
           fi
 
-          if [ -d "checkpoints" ]; then
-            echo ""
-            echo "CHECKPOINTS:"
-            find checkpoints \
-              -maxdepth 2 \
-              -type f \
-              -print \
-              | sort
-          fi
-
-          if [ -d "logs" ]; then
-            echo ""
-            echo "LOGS:"
-            find logs \
-              -maxdepth 2 \
-              -type f \
-              -print \
-              | sort
-          fi
-
 
       # ======================================================
-      # 27. UPLOAD RELATÓRIO
+      # 32. UPLOAD RELATÓRIO
       # ======================================================
 
       - name: Upload final report
-        if: success()
+        if: >
+          success() &&
+          steps.bootstrap.outputs.complete == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: B3_INVESTMENT_ENGINE_REPORT
@@ -858,7 +891,7 @@ jobs:
 
 
       # ======================================================
-      # 28. UPLOAD MANIFESTOS
+      # 33. UPLOAD MANIFESTOS
       # ======================================================
 
       - name: Upload LIVE manifests
@@ -869,16 +902,19 @@ jobs:
           path: |
             data/live/cvm/cvm_manifest.json
             data/live/b3/*.json
+            data/live/b3/current_year/.bootstrap_state.json
           if-no-files-found: warn
           retention-days: 30
 
 
       # ======================================================
-      # 29. UPLOAD CHECKPOINTS
+      # 34. CHECKPOINTS
       # ======================================================
 
       - name: Upload checkpoints
-        if: success()
+        if: >
+          success() &&
+          steps.bootstrap.outputs.complete == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: B3_INVESTMENT_ENGINE_CHECKPOINTS
@@ -889,7 +925,7 @@ jobs:
 
 
       # ======================================================
-      # 30. UPLOAD LOGS EM FALHA
+      # 35. LOGS EM FALHA
       # ======================================================
 
       - name: Upload logs on failure
