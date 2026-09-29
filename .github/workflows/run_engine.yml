@@ -94,36 +94,52 @@ jobs:
 
 
       # ======================================================
-      # 7. RESTAURAR CACHE PERSISTENTE B3
+      # 7. RESTAURAR COTAHIST
       # ======================================================
       #
-      # Preserva entre runners:
-      #
-      # 1. COTAHIST histórico oficial;
-      # 2. SPRE do ano corrente;
-      # 3. snapshots incrementais processados.
-      #
-      # O cache NÃO congela os dados.
-      #
-      # Os scripts de atualização continuam sendo executados
-      # em toda rodada e verificam novos dados oficiais.
+      # COTAHIST é histórico e praticamente imutável.
+      # Mantemos separado do cache diário do SPRE/V5.
       # ======================================================
 
-      - name: Restore B3 persistent cache
-        id: b3-cache
-        uses: actions/cache@v4
+      - name: Restore B3 COTAHIST cache
+        id: restore-cotahist
+        uses: actions/cache/restore@v4
         with:
           path: |
             data/live/b3/cotahist
-            data/live/b3/current_year
-            data/live/b3/cache
-          key: b3-live-${{ runner.os }}-${{ github.run_id }}
+          key: b3-cotahist-${{ runner.os }}-2026
           restore-keys: |
-            b3-live-${{ runner.os }}-
+            b3-cotahist-${{ runner.os }}-
 
 
       # ======================================================
-      # 8. AUDITAR CACHE RESTAURADO
+      # 8. RESTAURAR ANO CORRENTE + CACHE V5
+      # ======================================================
+      #
+      # Restaura:
+      # - arquivos SPRE já obtidos;
+      # - partições COTAHIST processadas;
+      # - partições SPRE processadas;
+      # - state.json da V5.
+      #
+      # Cada execução recebe uma chave nova.
+      # restore-keys recupera a versão anterior mais recente.
+      # ======================================================
+
+      - name: Restore B3 incremental cache
+        id: restore-b3-live
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/live/b3/current_year
+            data/live/b3/cache
+          key: b3-incremental-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            b3-incremental-${{ runner.os }}-
+
+
+      # ======================================================
+      # 9. AUDITAR CACHE RESTAURADO
       # ======================================================
 
       - name: Audit restored B3 cache
@@ -132,12 +148,17 @@ jobs:
           echo "CACHE B3 RESTAURADO"
           echo "=========================================="
 
-          echo "Cache hit exato:"
-          echo "${{ steps.b3-cache.outputs.cache-hit }}"
-
           echo ""
           echo "COTAHIST:"
           if [ -d "data/live/b3/cotahist" ]; then
+            COUNT=$(find data/live/b3/cotahist \
+              -maxdepth 1 \
+              -type f \
+              \( -name 'COTAHIST_A*.ZIP' -o -name 'COTAHIST_A*.zip' \) \
+              | wc -l)
+
+            echo "Arquivos COTAHIST: $COUNT"
+
             find data/live/b3/cotahist \
               -maxdepth 1 \
               -type f \
@@ -148,20 +169,20 @@ jobs:
           fi
 
           echo ""
-          echo "SPRE ANO CORRENTE:"
+          echo "SPRE:"
           if [ -d "data/live/b3/current_year" ]; then
             COUNT=$(find data/live/b3/current_year \
               -maxdepth 1 \
               -type f \
-              -name 'SPRE*.zip' \
+              \( -name 'SPRE*.zip' -o -name 'SPRE*.ZIP' \) \
               | wc -l)
 
-            echo "Arquivos SPRE restaurados: $COUNT"
+            echo "Arquivos SPRE: $COUNT"
 
             find data/live/b3/current_year \
               -maxdepth 1 \
               -type f \
-              -name 'SPRE*.zip' \
+              \( -name 'SPRE*.zip' -o -name 'SPRE*.ZIP' \) \
               -print \
               | sort \
               | tail -10
@@ -170,22 +191,41 @@ jobs:
           fi
 
           echo ""
-          echo "SNAPSHOTS/CACHE:"
-          if [ -d "data/live/b3/cache" ]; then
-            find data/live/b3/cache \
-              -maxdepth 3 \
+          echo "CACHE V5:"
+          if [ -d "data/live/b3/cache/market_history_v5" ]; then
+            COTA_PARTS=$(find \
+              data/live/b3/cache/market_history_v5/cotahist_parts \
+              -maxdepth 1 \
               -type f \
-              -print \
-              | sort
+              -name '*.csv' \
+              2>/dev/null \
+              | wc -l)
+
+            SPRE_PARTS=$(find \
+              data/live/b3/cache/market_history_v5/spre_parts \
+              -maxdepth 1 \
+              -type f \
+              -name '*.csv' \
+              2>/dev/null \
+              | wc -l)
+
+            echo "Partições COTAHIST V5: $COTA_PARTS"
+            echo "Partições SPRE V5: $SPRE_PARTS"
+
+            if [ -f "data/live/b3/cache/market_history_v5/state.json" ]; then
+              echo "state.json V5: OK"
+            else
+              echo "state.json V5: ainda não criado."
+            fi
           else
-            echo "Nenhum snapshot restaurado."
+            echo "Cache V5 ainda não criado."
           fi
 
           echo "=========================================="
 
 
       # ======================================================
-      # 9. ATUALIZAR DADOS OFICIAIS CVM
+      # 10. ATUALIZAR DADOS OFICIAIS CVM
       # ======================================================
 
       - name: Update official CVM data
@@ -202,7 +242,7 @@ jobs:
 
 
       # ======================================================
-      # 10. AUDITAR CAMADA CVM
+      # 11. AUDITAR CAMADA CVM
       # ======================================================
 
       - name: Audit updated CVM data
@@ -253,13 +293,7 @@ jobs:
 
 
       # ======================================================
-      # 11. ATUALIZAR HISTÓRICO OFICIAL B3
-      # ======================================================
-      #
-      # Executa sempre.
-      #
-      # Histórico existente e válido é reutilizado.
-      # Arquivo ausente/inválido é recuperado.
+      # 12. ATUALIZAR HISTÓRICO OFICIAL B3
       # ======================================================
 
       - name: Update official B3 historical data
@@ -276,17 +310,27 @@ jobs:
 
 
       # ======================================================
-      # 12. ATUALIZAR ANO CORRENTE B3
+      # 13. SALVAR COTAHIST ANTES DO BUILD
       # ======================================================
       #
-      # update_b3_current_year.py V2 incremental.
+      # Este save ocorre ANTES da etapa pesada.
       #
-      # Primeira carga:
-      # bootstrap do ano.
-      #
-      # Execuções seguintes:
-      # verifica apenas a janela necessária para encontrar
-      # pregões novos/atrasados.
+      # Portanto, se qualquer etapa posterior falhar,
+      # os arquivos históricos já baixados permanecem
+      # disponíveis para a próxima execução.
+      # ======================================================
+
+      - name: Save B3 COTAHIST cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/live/b3/cotahist
+          key: b3-cotahist-${{ runner.os }}-2026
+
+
+      # ======================================================
+      # 14. ATUALIZAR ANO CORRENTE B3
       # ======================================================
 
       - name: Update current-year B3 data
@@ -303,25 +347,38 @@ jobs:
 
 
       # ======================================================
-      # 13. CONSTRUIR MARKET HISTORY LIVE
+      # 15. SALVAR FONTES DO ANO CORRENTE ANTES DO BUILD
       # ======================================================
       #
-      # build_b3_market_history.py V4:
+      # Ponto crítico.
       #
-      # - snapshot persistente;
-      # - COTAHIST já incorporado não é reprocessado;
-      # - SPRE já incorporado não é reprocessado;
-      # - novo pregão é incorporado;
-      # - checkpoint após cada fonte processada.
+      # Os SPRE baixados são persistidos ANTES do
+      # build_b3_market_history.py.
+      #
+      # Mesmo que o build falhe, não será necessário
+      # baixar novamente todo o ano.
+      # ======================================================
+
+      - name: Save B3 current-year source cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/live/b3/current_year
+          key: b3-spre-source-${{ runner.os }}-${{ github.run_id }}
+
+
+      # ======================================================
+      # 16. CONSTRUIR MARKET HISTORY LIVE — V5
       # ======================================================
 
       - name: Build B3 market history LIVE
         run: |
           echo "=========================================="
-          echo "BUILD B3 MARKET HISTORY LIVE"
+          echo "BUILD B3 MARKET HISTORY LIVE — V5"
           echo "=========================================="
 
-          python build_b3_market_history.py
+          python -u build_b3_market_history.py
 
           if [ ! -f "data/live/b3/market_history_live.csv" ]; then
             echo "ERRO:"
@@ -352,7 +409,26 @@ jobs:
 
 
       # ======================================================
-      # 14. CONSTRUIR FUNDAMENTOS LIVE
+      # 17. SALVAR CACHE V5 IMEDIATAMENTE
+      # ======================================================
+      #
+      # Só chegamos aqui quando o build V5 terminou.
+      #
+      # As partições e state.json são então persistidos
+      # imediatamente, sem esperar o restante do robô.
+      # ======================================================
+
+      - name: Save B3 V5 processed cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/live/b3/cache
+          key: b3-processed-${{ runner.os }}-${{ github.run_id }}
+
+
+      # ======================================================
+      # 18. CONSTRUIR FUNDAMENTOS LIVE
       # ======================================================
 
       - name: Build LIVE fundamental input
@@ -369,7 +445,7 @@ jobs:
 
 
       # ======================================================
-      # 15. AUDITAR FUNDAMENTOS LIVE
+      # 19. AUDITAR FUNDAMENTOS LIVE
       # ======================================================
 
       - name: Audit LIVE fundamental input
@@ -473,18 +549,16 @@ jobs:
 
 
       # ======================================================
-      # 16. VALIDAR BASE TÉCNICA ATUAL
+      # 20. VALIDAR BASE TÉCNICA ATUAL
       # ======================================================
       #
       # TRANSITÓRIO:
       #
-      # A camada fundamental já está LIVE.
+      # Fundamental = LIVE
+      # Técnico = data/technical_prices.csv
       #
-      # A camada técnica ainda utiliza:
-      # data/technical_prices.csv
-      #
-      # Não declarar o robô 100% LIVE antes da substituição
-      # desta camada.
+      # Não declarar robô 100% LIVE até fecharmos
+      # a camada técnica.
       # ======================================================
 
       - name: Validate current technical input
@@ -575,7 +649,7 @@ jobs:
 
 
       # ======================================================
-      # 17. VERIFICAR ENTRADAS DO MAIN
+      # 21. VERIFICAR ENTRADAS DO MAIN
       # ======================================================
 
       - name: Check engine input data
@@ -608,7 +682,7 @@ jobs:
 
 
       # ======================================================
-      # 18. EXECUTAR MOTOR
+      # 22. EXECUTAR MOTOR
       # ======================================================
 
       - name: Run B3 Investment Engine
@@ -621,7 +695,7 @@ jobs:
 
 
       # ======================================================
-      # 19. VALIDAR RESULTADO
+      # 23. VALIDAR RESULTADO
       # ======================================================
 
       - name: Validate engine results
@@ -657,7 +731,7 @@ jobs:
 
 
       # ======================================================
-      # 20. GERAR RELATÓRIO FINAL
+      # 24. GERAR RELATÓRIO FINAL
       # ======================================================
 
       - name: Generate final report
@@ -666,7 +740,7 @@ jobs:
 
 
       # ======================================================
-      # 21. MOSTRAR ARQUIVOS GERADOS
+      # 25. MOSTRAR ARQUIVOS GERADOS
       # ======================================================
 
       - name: Show generated files
@@ -690,7 +764,7 @@ jobs:
             echo ""
             echo "B3:"
             find data/live/b3 \
-              -maxdepth 3 \
+              -maxdepth 4 \
               -type f \
               -print \
               | sort
@@ -738,7 +812,7 @@ jobs:
 
 
       # ======================================================
-      # 22. SALVAR RELATÓRIO FINAL
+      # 26. UPLOAD RELATÓRIO
       # ======================================================
 
       - name: Upload final report
@@ -753,7 +827,7 @@ jobs:
 
 
       # ======================================================
-      # 23. SALVAR MANIFESTOS LIVE
+      # 27. UPLOAD MANIFESTOS
       # ======================================================
 
       - name: Upload LIVE manifests
@@ -769,7 +843,7 @@ jobs:
 
 
       # ======================================================
-      # 24. SALVAR CHECKPOINTS
+      # 28. UPLOAD CHECKPOINTS
       # ======================================================
 
       - name: Upload checkpoints
@@ -784,7 +858,7 @@ jobs:
 
 
       # ======================================================
-      # 25. SALVAR LOGS SE HOUVER FALHA
+      # 29. UPLOAD LOGS EM FALHA
       # ======================================================
 
       - name: Upload logs on failure
