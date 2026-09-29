@@ -1,30 +1,33 @@
 # ============================================================
 # B3 INVESTMENT ENGINE
-# BUILD B3 MARKET HISTORY — V4 INCREMENTAL SNAPSHOT
+# BUILD B3 MARKET HISTORY — V5 PARTITIONED INCREMENTAL CACHE
+# ============================================================
 #
 # OBJETIVO
 # ------------------------------------------------------------
-# Construir e manter incrementalmente:
+# Construir e manter:
 #
-# 1. market_history_live.csv
+# 1. data/live/b3/market_history_live.csv
 #    - histórico oficial de liquidez;
 #    - fonte: B3 COTAHIST;
 #    - VOLTOT oficial.
 #
-# 2. spre_prices_live.csv
+# 2. data/live/b3/spre_prices_live.csv
 #    - preços oficiais do ano corrente;
 #    - fonte: B3 BVBG.186.01;
 #    - NÃO transforma RglrTxsQty em VOLTOT.
 #
-# ARQUITETURA V4
+# ARQUITETURA V5
 # ------------------------------------------------------------
-# - snapshots consolidados persistentes;
-# - inventário de fontes já incorporadas;
-# - somente arquivo novo/alterado é processado;
-# - execução interrompida não perde o progresso já salvo;
-# - COTAHIST histórico não é reconstruído sem necessidade;
-# - SPRE antigo não é reaberto sem necessidade;
-# - dados novos entram a cada execução.
+# - cache particionado por arquivo-fonte;
+# - cada COTAHIST anual gera somente sua própria partição;
+# - cada SPRE gera somente sua própria partição;
+# - fonte já processada e inalterada não é reprocessada;
+# - NÃO regrava snapshot acumulado após cada arquivo;
+# - consolidação global ocorre UMA VEZ no final;
+# - arquivos novos entram normalmente;
+# - identidade da fonte usa SHA-256 e não mtime;
+# - metodologia financeira permanece congelada.
 #
 # METODOLOGIA
 # ------------------------------------------------------------
@@ -68,99 +71,76 @@ DATA_DIR = ROOT / "data"
 LIVE_DIR = DATA_DIR / "live"
 B3_DIR = LIVE_DIR / "b3"
 
-HISTORICAL_DIR = (
-    B3_DIR / "cotahist"
-)
+HISTORICAL_DIR = B3_DIR / "cotahist"
+CURRENT_YEAR_DIR = B3_DIR / "current_year"
 
-CURRENT_YEAR_DIR = (
-    B3_DIR / "current_year"
-)
+OUTPUT_FILE = B3_DIR / "market_history_live.csv"
+SPRE_PRICE_FILE = B3_DIR / "spre_prices_live.csv"
+MANIFEST_FILE = B3_DIR / "market_history_manifest.json"
 
-OUTPUT_FILE = (
-    B3_DIR / "market_history_live.csv"
-)
+CACHE_ROOT = B3_DIR / "cache" / "market_history_v5"
 
-SPRE_PRICE_FILE = (
-    B3_DIR / "spre_prices_live.csv"
-)
+COTAHIST_CACHE_DIR = CACHE_ROOT / "cotahist_parts"
+SPRE_CACHE_DIR = CACHE_ROOT / "spre_parts"
 
-MANIFEST_FILE = (
-    B3_DIR / "market_history_manifest.json"
-)
-
-
-# ============================================================
-# ESTADO INCREMENTAL
-# ============================================================
-
-STATE_DIR = (
-    B3_DIR / "cache" / "market_history_v4"
-)
-
-STATE_FILE = (
-    STATE_DIR / "state.json"
-)
-
-MARKET_SNAPSHOT_FILE = (
-    STATE_DIR / "market_history_snapshot.csv"
-)
-
-SPRE_SNAPSHOT_FILE = (
-    STATE_DIR / "spre_prices_snapshot.csv"
-)
+STATE_FILE = CACHE_ROOT / "state.json"
 
 
 # ============================================================
 # CONSTANTS
 # ============================================================
 
-CURRENT_YEAR = datetime.now(
-    timezone.utc
-).year
+CURRENT_YEAR = datetime.now(timezone.utc).year
 
 VALID_MARKET_TYPE = "010"
 
 METHODOLOGY_VERSION = (
-    "B3_MARKET_HISTORY_V4_INCREMENTAL_SNAPSHOT"
+    "B3_MARKET_HISTORY_V5_PARTITIONED_INCREMENTAL_CACHE"
 )
 
 STATE_VERSION = 1
 
 MINIMUM_HISTORY_YEARS = 10
+MINIMUM_DAILY_LIQUIDITY_BRL = 6_000_000
 
-MINIMUM_DAILY_LIQUIDITY_BRL = (
-    6_000_000
-)
+SPRE_COLUMNS = [
+    "TICKER",
+    "DATA",
+    "FIRST_PRICE",
+    "LOW_PRICE",
+    "HIGH_PRICE",
+    "AVG_PRICE",
+    "LAST_PRICE",
+    "REGULAR_TRADES_QTY",
+    "SOURCE",
+]
 
 
 # ============================================================
-# DIRETÓRIOS
+# DIRECTORIES
 # ============================================================
 
-B3_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
-
-STATE_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
+for directory in [
+    B3_DIR,
+    CACHE_ROOT,
+    COTAHIST_CACHE_DIR,
+    SPRE_CACHE_DIR,
+]:
+    directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
 
 # ============================================================
 # EXCEPTIONS
 # ============================================================
 
-class B3MarketHistoryError(
-    RuntimeError
-):
+class B3MarketHistoryError(RuntimeError):
     pass
 
 
-class DataInsufficientError(
-    B3MarketHistoryError
-):
+class DataInsufficientError(B3MarketHistoryError):
     pass
 
 
@@ -173,6 +153,16 @@ def utc_now_iso() -> str:
     return datetime.now(
         timezone.utc
     ).isoformat()
+
+
+def log(
+    *args,
+) -> None:
+
+    print(
+        *args,
+        flush=True,
+    )
 
 
 def write_json_atomic(
@@ -199,9 +189,7 @@ def write_json_atomic(
         encoding="utf-8",
     )
 
-    tmp.replace(
-        path
-    )
+    tmp.replace(path)
 
 
 def write_csv_atomic(
@@ -224,19 +212,14 @@ def write_csv_atomic(
         encoding="utf-8-sig",
     )
 
-    tmp.replace(
-        path
-    )
+    tmp.replace(path)
 
 
 def normalize_ticker(
     value,
 ):
 
-    if pd.isna(
-        value
-    ):
-
+    if pd.isna(value):
         return None
 
     value = (
@@ -246,7 +229,6 @@ def normalize_ticker(
     )
 
     if not value:
-
         return None
 
     return value
@@ -257,7 +239,6 @@ def local_name(
 ) -> str:
 
     if "}" in tag:
-
         return tag.rsplit(
             "}",
             1,
@@ -271,44 +252,33 @@ def safe_float(
 ):
 
     if value is None:
-
         return None
 
-    value = str(
-        value
-    ).strip()
+    value = str(value).strip()
 
     if not value:
-
         return None
 
     try:
-
-        return float(
-            value
-        )
+        return float(value)
 
     except (
         TypeError,
         ValueError,
     ):
-
         return None
 
 
 # ============================================================
-# IDENTIDADE ESTÁVEL DA FONTE
+# SOURCE IDENTITY
 # ============================================================
 #
-# Não usa mtime.
+# IMPORTANT:
+# mtime is deliberately NOT used.
 #
-# GitHub runner pode recriar um arquivo com nova data de
-# modificação mesmo quando o conteúdo oficial é o mesmo.
-#
-# Identidade:
-# - nome;
-# - tamanho;
-# - hash SHA-256.
+# GitHub runners can recreate files with a different
+# modification timestamp even when the official content
+# has not changed.
 #
 # ============================================================
 
@@ -318,9 +288,7 @@ def sha256_file(
 
     h = hashlib.sha256()
 
-    with path.open(
-        "rb"
-    ) as stream:
+    with path.open("rb") as stream:
 
         for chunk in iter(
             lambda: stream.read(
@@ -328,10 +296,7 @@ def sha256_file(
             ),
             b"",
         ):
-
-            h.update(
-                chunk
-            )
+            h.update(chunk)
 
     return h.hexdigest()
 
@@ -341,18 +306,11 @@ def source_identity(
 ) -> dict:
 
     return {
-        "filename":
-            path.name,
-
-        "size_bytes":
-            int(
-                path.stat().st_size
-            ),
-
-        "sha256":
-            sha256_file(
-                path
-            ),
+        "filename": path.name,
+        "size_bytes": int(
+            path.stat().st_size
+        ),
+        "sha256": sha256_file(path),
     }
 
 
@@ -362,17 +320,11 @@ def same_identity(
 ) -> bool:
 
     if not old:
-
         return False
 
     return (
-        old.get(
-            "filename"
-        )
-        ==
-        new.get(
-            "filename"
-        )
+        old.get("filename")
+        == new.get("filename")
         and
         int(
             old.get(
@@ -388,41 +340,28 @@ def same_identity(
             )
         )
         and
-        old.get(
-            "sha256"
-        )
-        ==
-        new.get(
-            "sha256"
-        )
+        old.get("sha256")
+        == new.get("sha256")
     )
 
 
 # ============================================================
-# ESTADO
+# STATE
 # ============================================================
 
 def empty_state() -> dict:
 
     return {
-        "state_version":
-            STATE_VERSION,
-
-        "generated_at_utc":
-            utc_now_iso(),
-
-        "cotahist":
-            {},
-
-        "spre":
-            {},
+        "state_version": STATE_VERSION,
+        "generated_at_utc": utc_now_iso(),
+        "cotahist": {},
+        "spre": {},
     }
 
 
 def load_state() -> dict:
 
     if not STATE_FILE.exists():
-
         return empty_state()
 
     try:
@@ -434,35 +373,24 @@ def load_state() -> dict:
         )
 
     except Exception:
-
         return empty_state()
 
     if (
-        state.get(
-            "state_version"
-        )
-        !=
-        STATE_VERSION
+        state.get("state_version")
+        != STATE_VERSION
     ):
-
         return empty_state()
 
     if not isinstance(
-        state.get(
-            "cotahist"
-        ),
+        state.get("cotahist"),
         dict,
     ):
-
         state["cotahist"] = {}
 
     if not isinstance(
-        state.get(
-            "spre"
-        ),
+        state.get("spre"),
         dict,
     ):
-
         state["spre"] = {}
 
     return state
@@ -483,10 +411,49 @@ def save_state(
 
 
 # ============================================================
-# SNAPSHOT — MARKET HISTORY
+# CACHE PATHS
 # ============================================================
 
-def empty_market_snapshot() -> pd.DataFrame:
+def safe_cache_name(
+    filename: str,
+) -> str:
+
+    value = re.sub(
+        r"[^A-Za-z0-9_.-]+",
+        "_",
+        filename,
+    )
+
+    return value
+
+
+def cotahist_cache_path(
+    source: Path,
+) -> Path:
+
+    return (
+        COTAHIST_CACHE_DIR
+        /
+        f"{safe_cache_name(source.name)}.csv"
+    )
+
+
+def spre_cache_path(
+    source: Path,
+) -> Path:
+
+    return (
+        SPRE_CACHE_DIR
+        /
+        f"{safe_cache_name(source.name)}.csv"
+    )
+
+
+# ============================================================
+# EMPTY DATAFRAMES
+# ============================================================
+
+def empty_market() -> pd.DataFrame:
 
     return pd.DataFrame(
         columns=[
@@ -497,238 +464,15 @@ def empty_market_snapshot() -> pd.DataFrame:
     )
 
 
-def load_market_snapshot() -> pd.DataFrame:
-
-    candidate = None
-
-    if MARKET_SNAPSHOT_FILE.exists():
-
-        candidate = (
-            MARKET_SNAPSHOT_FILE
-        )
-
-    elif OUTPUT_FILE.exists():
-
-        candidate = (
-            OUTPUT_FILE
-        )
-
-    if candidate is None:
-
-        return empty_market_snapshot()
-
-    try:
-
-        df = pd.read_csv(
-            candidate,
-            low_memory=False,
-        )
-
-    except Exception:
-
-        return empty_market_snapshot()
-
-    required = {
-        "TICKER",
-        "DATA",
-        "VOLTOT",
-    }
-
-    if not required.issubset(
-        set(
-            df.columns
-        )
-    ):
-
-        return empty_market_snapshot()
-
-    df = df[
-        [
-            "TICKER",
-            "DATA",
-            "VOLTOT",
-        ]
-    ].copy()
-
-    df["TICKER"] = (
-        df["TICKER"]
-        .map(
-            normalize_ticker
-        )
-    )
-
-    df["DATA"] = pd.to_datetime(
-        df["DATA"],
-        errors="coerce",
-    )
-
-    df["VOLTOT"] = pd.to_numeric(
-        df["VOLTOT"],
-        errors="coerce",
-    )
-
-    df = df.dropna(
-        subset=[
-            "TICKER",
-            "DATA",
-            "VOLTOT",
-        ]
-    )
-
-    df = df[
-        df["VOLTOT"] >= 0
-    ].copy()
-
-    return (
-        df
-        .sort_values(
-            [
-                "DATA",
-                "TICKER",
-            ]
-        )
-        .reset_index(
-            drop=True
-        )
-    )
-
-
-# ============================================================
-# SNAPSHOT — SPRE
-# ============================================================
-
-SPRE_COLUMNS = [
-    "TICKER",
-    "DATA",
-    "FIRST_PRICE",
-    "LOW_PRICE",
-    "HIGH_PRICE",
-    "AVG_PRICE",
-    "LAST_PRICE",
-    "REGULAR_TRADES_QTY",
-    "SOURCE",
-]
-
-
-def empty_spre_snapshot() -> pd.DataFrame:
+def empty_spre() -> pd.DataFrame:
 
     return pd.DataFrame(
         columns=SPRE_COLUMNS
     )
 
 
-def load_spre_snapshot() -> pd.DataFrame:
-
-    candidate = None
-
-    if SPRE_SNAPSHOT_FILE.exists():
-
-        candidate = (
-            SPRE_SNAPSHOT_FILE
-        )
-
-    elif SPRE_PRICE_FILE.exists():
-
-        candidate = (
-            SPRE_PRICE_FILE
-        )
-
-    if candidate is None:
-
-        return empty_spre_snapshot()
-
-    try:
-
-        df = pd.read_csv(
-            candidate,
-            low_memory=False,
-        )
-
-    except Exception:
-
-        return empty_spre_snapshot()
-
-    required = {
-        "TICKER",
-        "DATA",
-    }
-
-    if not required.issubset(
-        set(
-            df.columns
-        )
-    ):
-
-        return empty_spre_snapshot()
-
-    for column in SPRE_COLUMNS:
-
-        if column not in df.columns:
-
-            df[column] = pd.NA
-
-    df = df[
-        SPRE_COLUMNS
-    ].copy()
-
-    df["TICKER"] = (
-        df["TICKER"]
-        .map(
-            normalize_ticker
-        )
-    )
-
-    df["DATA"] = pd.to_datetime(
-        df["DATA"],
-        errors="coerce",
-    )
-
-    numeric_columns = [
-        "FIRST_PRICE",
-        "LOW_PRICE",
-        "HIGH_PRICE",
-        "AVG_PRICE",
-        "LAST_PRICE",
-        "REGULAR_TRADES_QTY",
-    ]
-
-    for column in numeric_columns:
-
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce",
-        )
-
-    df = df.dropna(
-        subset=[
-            "TICKER",
-            "DATA",
-        ]
-    )
-
-    return (
-        df
-        .sort_values(
-            [
-                "DATA",
-                "TICKER",
-            ]
-        )
-        .drop_duplicates(
-            subset=[
-                "DATA",
-                "TICKER",
-            ],
-            keep="last",
-        )
-        .reset_index(
-            drop=True
-        )
-    )
-
-
 # ============================================================
-# COTAHIST — PARSER
+# COTAHIST PARSER
 # ============================================================
 
 def parse_cotahist_line(
@@ -736,7 +480,6 @@ def parse_cotahist_line(
 ):
 
     if len(line) < 188:
-
         return None
 
     tipreg = (
@@ -745,7 +488,6 @@ def parse_cotahist_line(
     )
 
     if tipreg != "01":
-
         return None
 
     data_raw = (
@@ -765,11 +507,9 @@ def parse_cotahist_line(
     )
 
     if tpmerc != VALID_MARKET_TYPE:
-
         return None
 
     if not ticker:
-
         return None
 
     try:
@@ -781,7 +521,6 @@ def parse_cotahist_line(
         )
 
     except Exception:
-
         return None
 
     vol_raw = (
@@ -792,9 +531,7 @@ def parse_cotahist_line(
     try:
 
         voltot = (
-            int(
-                vol_raw
-            )
+            int(vol_raw)
             / 100.0
         )
 
@@ -802,20 +539,12 @@ def parse_cotahist_line(
         TypeError,
         ValueError,
     ):
-
         return None
 
     return {
-        "TICKER":
-            ticker,
-
-        "DATA":
-            data,
-
-        "VOLTOT":
-            float(
-                voltot
-            ),
+        "TICKER": ticker,
+        "DATA": data,
+        "VOLTOT": float(voltot),
     }
 
 
@@ -883,7 +612,6 @@ def parse_cotahist_zip(
                             )
 
                         except UnicodeDecodeError:
-
                             continue
 
                     row = parse_cotahist_line(
@@ -891,10 +619,7 @@ def parse_cotahist_zip(
                     )
 
                     if row is not None:
-
-                        records.append(
-                            row
-                        )
+                        records.append(row)
 
     except zipfile.BadZipFile as exc:
 
@@ -904,18 +629,13 @@ def parse_cotahist_zip(
         ) from exc
 
     if not records:
+        return empty_market()
 
-        return empty_market_snapshot()
-
-    df = pd.DataFrame(
-        records
-    )
+    df = pd.DataFrame(records)
 
     df["TICKER"] = (
         df["TICKER"]
-        .map(
-            normalize_ticker
-        )
+        .map(normalize_ticker)
     )
 
     df["DATA"] = pd.to_datetime(
@@ -940,9 +660,6 @@ def parse_cotahist_zip(
         df["VOLTOT"] >= 0
     ].copy()
 
-    # Consolida eventual duplicidade do mesmo ticker/dia
-    # dentro do arquivo anual.
-
     df = (
         df
         .groupby(
@@ -960,7 +677,7 @@ def parse_cotahist_zip(
 
 
 # ============================================================
-# SPRE — ZIP / XML
+# SPRE ZIP / XML
 # ============================================================
 
 def _read_outer_zip(
@@ -1006,9 +723,7 @@ def _read_outer_zip(
                 else names[0]
             )
 
-            return archive.read(
-                name
-            )
+            return archive.read(name)
 
     except zipfile.BadZipFile as exc:
 
@@ -1022,9 +737,7 @@ def _extract_spre_xml(
     path: Path,
 ) -> bytes:
 
-    payload = _read_outer_zip(
-        path
-    )
+    payload = _read_outer_zip(path)
 
     depth = 0
 
@@ -1042,9 +755,7 @@ def _extract_spre_xml(
         try:
 
             with zipfile.ZipFile(
-                io.BytesIO(
-                    payload
-                ),
+                io.BytesIO(payload),
                 "r",
             ) as nested:
 
@@ -1133,7 +844,6 @@ def _element_values(
     for child in element.iter():
 
         if child is element:
-
             continue
 
         key = local_name(
@@ -1145,10 +855,7 @@ def _element_values(
         ).strip()
 
         if text:
-
-            values[
-                key
-            ] = text
+            values[key] = text
 
     return values
 
@@ -1160,17 +867,13 @@ def parse_spre_xml(
 
     records = []
 
-    stream = io.BytesIO(
-        payload
-    )
+    stream = io.BytesIO(payload)
 
     try:
 
         context = ET.iterparse(
             stream,
-            events=(
-                "end",
-            ),
+            events=("end",),
         )
 
         for _, elem in context:
@@ -1178,33 +881,23 @@ def parse_spre_xml(
             if local_name(
                 elem.tag
             ) != "PricRpt":
-
                 continue
 
-            values = _element_values(
-                elem
-            )
+            values = _element_values(elem)
 
             ticker = normalize_ticker(
-                values.get(
-                    "TckrSymb"
-                )
+                values.get("TckrSymb")
             )
 
             if not ticker:
 
                 elem.clear()
-
                 continue
 
             date_value = (
-                values.get(
-                    "Dt"
-                )
+                values.get("Dt")
                 or
-                values.get(
-                    "TradDt"
-                )
+                values.get("TradDt")
             )
 
             if date_value:
@@ -1220,12 +913,9 @@ def parse_spre_xml(
                     filename_trade_date
                 )
 
-            if pd.isna(
-                trade_date
-            ):
+            if pd.isna(trade_date):
 
                 elem.clear()
-
                 continue
 
             records.append(
@@ -1298,9 +988,7 @@ def parse_spre_xml(
             "encontrado no BVBG.186.01."
         )
 
-    df = pd.DataFrame(
-        records
-    )
+    df = pd.DataFrame(records)
 
     df["DATA"] = pd.to_datetime(
         df["DATA"],
@@ -1329,9 +1017,7 @@ def parse_spre_xml(
             ],
             keep="last",
         )
-        .reset_index(
-            drop=True
-        )
+        .reset_index(drop=True)
     )
 
 
@@ -1351,21 +1037,15 @@ def parse_spre_zip(
             f"{path.name}"
         )
 
-    date_code = match.group(
-        1
+    date_code = match.group(1)
+
+    filename_trade_date = pd.to_datetime(
+        date_code,
+        format="%y%m%d",
+        errors="raise",
     )
 
-    filename_trade_date = (
-        pd.to_datetime(
-            date_code,
-            format="%y%m%d",
-            errors="raise",
-        )
-    )
-
-    payload = _extract_spre_xml(
-        path
-    )
+    payload = _extract_spre_xml(path)
 
     df = parse_spre_xml(
         payload,
@@ -1383,8 +1063,28 @@ def parse_spre_zip(
 
 
 # ============================================================
-# LISTAGEM DE FONTES
+# SOURCE LISTING
 # ============================================================
+
+def unique_paths(
+    paths: list[Path],
+) -> list[Path]:
+
+    output = []
+    seen = set()
+
+    for path in sorted(paths):
+
+        key = str(path.resolve())
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        output.append(path)
+
+    return output
+
 
 def list_cotahist_files() -> list[Path]:
 
@@ -1395,7 +1095,7 @@ def list_cotahist_files() -> list[Path]:
             f"{HISTORICAL_DIR}"
         )
 
-    files = sorted(
+    files = unique_paths(
         list(
             HISTORICAL_DIR.glob(
                 "COTAHIST_A*.ZIP"
@@ -1409,35 +1109,14 @@ def list_cotahist_files() -> list[Path]:
         )
     )
 
-    unique = []
-    seen = set()
-
-    for path in files:
-
-        key = str(
-            path.resolve()
-        )
-
-        if key in seen:
-
-            continue
-
-        seen.add(
-            key
-        )
-
-        unique.append(
-            path
-        )
-
-    if not unique:
+    if not files:
 
         raise DataInsufficientError(
             "Nenhum COTAHIST anual "
             "foi encontrado."
         )
 
-    return unique
+    return files
 
 
 def list_spre_files() -> list[Path]:
@@ -1450,7 +1129,7 @@ def list_spre_files() -> list[Path]:
             f"{CURRENT_YEAR_DIR}"
         )
 
-    files = sorted(
+    files = unique_paths(
         list(
             CURRENT_YEAR_DIR.glob(
                 "SPRE*.zip"
@@ -1464,43 +1143,78 @@ def list_spre_files() -> list[Path]:
         )
     )
 
-    unique = []
-    seen = set()
-
-    for path in files:
-
-        key = str(
-            path.resolve()
-        )
-
-        if key in seen:
-
-            continue
-
-        seen.add(
-            key
-        )
-
-        unique.append(
-            path
-        )
-
-    if not unique:
+    if not files:
 
         raise DataInsufficientError(
             "Nenhum arquivo SPRE do "
             "ano corrente foi encontrado."
         )
 
-    return unique
+    return files
 
 
 # ============================================================
-# COTAHIST — INCREMENTAL
+# PARTITION VALIDATION
 # ============================================================
 
-def update_cotahist_snapshot(
-    market: pd.DataFrame,
+def valid_cotahist_partition(
+    path: Path,
+) -> bool:
+
+    if not path.exists():
+        return False
+
+    try:
+
+        header = pd.read_csv(
+            path,
+            nrows=2,
+        )
+
+    except Exception:
+        return False
+
+    required = {
+        "TICKER",
+        "DATA",
+        "VOLTOT",
+    }
+
+    return required.issubset(
+        set(header.columns)
+    )
+
+
+def valid_spre_partition(
+    path: Path,
+) -> bool:
+
+    if not path.exists():
+        return False
+
+    try:
+
+        header = pd.read_csv(
+            path,
+            nrows=2,
+        )
+
+    except Exception:
+        return False
+
+    return {
+        "TICKER",
+        "DATA",
+    }.issubset(
+        set(header.columns)
+    )
+
+
+# ============================================================
+# COTAHIST PARTITION UPDATE
+# ============================================================
+
+def update_cotahist_partitions(
     state: dict,
 ):
 
@@ -1508,7 +1222,6 @@ def update_cotahist_snapshot(
 
     processed = 0
     unchanged = 0
-
     years = []
 
     for index, path in enumerate(
@@ -1522,31 +1235,29 @@ def update_cotahist_snapshot(
         )
 
         if not match:
-
             continue
 
         year = int(
             match.group(1)
         )
 
-        years.append(
-            year
-        )
+        years.append(year)
 
-        print(
-            f"  COTAHIST {index}/{len(files)} "
+        log(
+            f"  COTAHIST "
+            f"{index}/{len(files)} "
             f"- {path.name}"
         )
 
-        identity = source_identity(
+        identity = source_identity(path)
+
+        partition = cotahist_cache_path(
             path
         )
 
         old_identity = (
             state["cotahist"]
-            .get(
-                path.name
-            )
+            .get(path.name)
         )
 
         if (
@@ -1555,18 +1266,19 @@ def update_cotahist_snapshot(
                 identity,
             )
             and
-            not market.empty
+            valid_cotahist_partition(
+                partition
+            )
         ):
 
-            print(
-                "    ✓ JÁ INCORPORADO"
+            log(
+                "    ✓ CACHE VÁLIDO"
             )
 
             unchanged += 1
-
             continue
 
-        print(
+        log(
             "    PROCESSANDO..."
         )
 
@@ -1581,110 +1293,49 @@ def update_cotahist_snapshot(
                 f"{path.name}"
             )
 
-        # Se a fonte do mesmo ano mudou,
-        # remove os registros daquele ano antes
-        # de incorporar a nova versão.
-
-        if not market.empty:
-
-            market = market[
-                market["DATA"].dt.year
-                !=
-                year
-            ].copy()
-
-        market = pd.concat(
-            [
-                market,
-                year_df,
-            ],
-            ignore_index=True,
-        )
-
-        market = (
-            market
-            .groupby(
-                [
-                    "TICKER",
-                    "DATA",
-                ],
-                as_index=False,
-                sort=False,
-            )["VOLTOT"]
-            .sum()
-        )
-
-        market = (
-            market
-            .sort_values(
-                [
-                    "DATA",
-                    "TICKER",
-                ]
+        year_df["DATA"] = (
+            pd.to_datetime(
+                year_df["DATA"],
+                errors="coerce",
             )
-            .reset_index(
-                drop=True
+            .dt.strftime(
+                "%Y-%m-%d"
             )
         )
-
-        # ====================================================
-        # CHECKPOINT IMEDIATO
-        # ====================================================
-        #
-        # Se a execução for interrompida depois,
-        # este ano não precisará ser processado novamente.
-        # ====================================================
 
         write_csv_atomic(
-            market,
-            MARKET_SNAPSHOT_FILE,
+            year_df,
+            partition,
         )
 
         state["cotahist"][
             path.name
         ] = identity
 
-        save_state(
-            state
-        )
+        save_state(state)
 
         processed += 1
 
-        print(
-            f"    ✓ INCORPORADO — "
+        log(
+            "    ✓ PARTIÇÃO SALVA — "
             f"{len(year_df)} registros"
         )
 
-    years = sorted(
-        set(
-            years
-        )
-    )
-
     return (
-        market,
-        years,
+        sorted(set(years)),
         {
-            "files":
-                len(
-                    files
-                ),
-
-            "unchanged":
-                unchanged,
-
-            "processed":
-                processed,
+            "files": len(files),
+            "unchanged": unchanged,
+            "processed": processed,
         },
     )
 
 
 # ============================================================
-# SPRE — INCREMENTAL
+# SPRE PARTITION UPDATE
 # ============================================================
 
-def update_spre_snapshot(
-    spre: pd.DataFrame,
+def update_spre_partitions(
     state: dict,
 ):
 
@@ -1699,20 +1350,21 @@ def update_spre_snapshot(
         start=1,
     ):
 
-        print(
-            f"  SPRE {index}/{len(files)} "
+        log(
+            f"  SPRE "
+            f"{index}/{len(files)} "
             f"- {path.name}"
         )
 
-        identity = source_identity(
+        identity = source_identity(path)
+
+        partition = spre_cache_path(
             path
         )
 
         old_identity = (
             state["spre"]
-            .get(
-                path.name
-            )
+            .get(path.name)
         )
 
         if (
@@ -1721,20 +1373,21 @@ def update_spre_snapshot(
                 identity,
             )
             and
-            not spre.empty
+            valid_spre_partition(
+                partition
+            )
         ):
 
-            print(
-                "    ✓ JÁ INCORPORADO"
+            log(
+                "    ✓ CACHE VÁLIDO"
             )
 
             unchanged += 1
-
             continue
 
         try:
 
-            print(
+            log(
                 "    PROCESSANDO..."
             )
 
@@ -1748,124 +1401,40 @@ def update_spre_snapshot(
                     "SPRE vazio."
                 )
 
-            trade_dates = (
+            for column in SPRE_COLUMNS:
+
+                if column not in day_df.columns:
+                    day_df[column] = pd.NA
+
+            day_df = day_df[
+                SPRE_COLUMNS
+            ].copy()
+
+            day_df["DATA"] = (
                 pd.to_datetime(
                     day_df["DATA"],
                     errors="coerce",
                 )
-                .dropna()
-                .dt.normalize()
-                .unique()
-            )
-
-            # Se o arquivo foi substituído,
-            # remove apenas os dias presentes nele.
-
-            if (
-                not spre.empty
-                and
-                len(
-                    trade_dates
-                )
-                > 0
-            ):
-
-                normalized_existing = (
-                    pd.to_datetime(
-                        spre["DATA"],
-                        errors="coerce",
-                    )
-                    .dt.normalize()
-                )
-
-                spre = spre[
-                    ~normalized_existing.isin(
-                        trade_dates
-                    )
-                ].copy()
-
-            spre = pd.concat(
-                [
-                    spre,
-                    day_df,
-                ],
-                ignore_index=True,
-            )
-
-            spre["TICKER"] = (
-                spre["TICKER"]
-                .map(
-                    normalize_ticker
+                .dt.strftime(
+                    "%Y-%m-%d"
                 )
             )
-
-            spre["DATA"] = pd.to_datetime(
-                spre["DATA"],
-                errors="coerce",
-            )
-
-            spre = spre.dropna(
-                subset=[
-                    "TICKER",
-                    "DATA",
-                ]
-            )
-
-            for column in SPRE_COLUMNS:
-
-                if column not in spre.columns:
-
-                    spre[column] = pd.NA
-
-            spre = (
-                spre[
-                    SPRE_COLUMNS
-                ]
-                .sort_values(
-                    [
-                        "DATA",
-                        "TICKER",
-                    ]
-                )
-                .drop_duplicates(
-                    subset=[
-                        "DATA",
-                        "TICKER",
-                    ],
-                    keep="last",
-                )
-                .reset_index(
-                    drop=True
-                )
-            )
-
-            # =================================================
-            # CHECKPOINT IMEDIATO
-            # =================================================
-            #
-            # Cada SPRE concluído é persistido.
-            #
-            # Se GitHub interromper a execução no arquivo 110,
-            # os 109 anteriores continuam incorporados.
-            # =================================================
 
             write_csv_atomic(
-                spre,
-                SPRE_SNAPSHOT_FILE,
+                day_df,
+                partition,
             )
 
             state["spre"][
                 path.name
             ] = identity
 
-            save_state(
-                state
-            )
+            save_state(state)
 
             processed += 1
 
-            print(
-                f"    ✓ INCORPORADO — "
+            log(
+                "    ✓ PARTIÇÃO SALVA — "
                 f"{len(day_df)} registros"
             )
 
@@ -1873,43 +1442,373 @@ def update_spre_snapshot(
 
             failures.append(
                 {
-                    "file":
-                        path.name,
-
-                    "error":
-                        str(
-                            exc
-                        ),
+                    "file": path.name,
+                    "error": str(exc),
                 }
             )
 
-            print(
+            log(
                 "    ! FALHA:",
-                str(
-                    exc
-                ),
+                str(exc),
             )
 
     return (
-        spre,
         failures,
         {
-            "files":
-                len(
-                    files
-                ),
-
-            "unchanged":
-                unchanged,
-
-            "processed":
-                processed,
+            "files": len(files),
+            "unchanged": unchanged,
+            "processed": processed,
         },
     )
 
 
 # ============================================================
-# AUDITORIA
+# REMOVE STALE CACHE
+# ============================================================
+
+def remove_stale_partitions(
+    state: dict,
+) -> None:
+
+    current_cotahist = {
+        path.name
+        for path in list_cotahist_files()
+    }
+
+    current_spre = {
+        path.name
+        for path in list_spre_files()
+    }
+
+    stale_cotahist = [
+        filename
+        for filename
+        in list(
+            state["cotahist"].keys()
+        )
+        if filename not in current_cotahist
+    ]
+
+    stale_spre = [
+        filename
+        for filename
+        in list(
+            state["spre"].keys()
+        )
+        if filename not in current_spre
+    ]
+
+    for filename in stale_cotahist:
+
+        partition = cotahist_cache_path(
+            HISTORICAL_DIR / filename
+        )
+
+        if partition.exists():
+            partition.unlink()
+
+        state["cotahist"].pop(
+            filename,
+            None,
+        )
+
+    for filename in stale_spre:
+
+        partition = spre_cache_path(
+            CURRENT_YEAR_DIR / filename
+        )
+
+        if partition.exists():
+            partition.unlink()
+
+        state["spre"].pop(
+            filename,
+            None,
+        )
+
+    if stale_cotahist or stale_spre:
+        save_state(state)
+
+
+# ============================================================
+# CONSOLIDATE COTAHIST ONCE
+# ============================================================
+
+def consolidate_cotahist(
+    state: dict,
+) -> pd.DataFrame:
+
+    frames = []
+
+    entries = sorted(
+        state["cotahist"].keys()
+    )
+
+    if not entries:
+
+        raise DataInsufficientError(
+            "Nenhuma partição COTAHIST "
+            "disponível."
+        )
+
+    log(
+        "  Partições COTAHIST:",
+        len(entries),
+    )
+
+    for index, filename in enumerate(
+        entries,
+        start=1,
+    ):
+
+        source = (
+            HISTORICAL_DIR
+            /
+            filename
+        )
+
+        partition = cotahist_cache_path(
+            source
+        )
+
+        if not valid_cotahist_partition(
+            partition
+        ):
+
+            raise DataInsufficientError(
+                "Partição COTAHIST ausente "
+                "ou inválida: "
+                f"{partition}"
+            )
+
+        log(
+            f"    Lendo {index}/{len(entries)} "
+            f"- {partition.name}"
+        )
+
+        df = pd.read_csv(
+            partition,
+            usecols=[
+                "TICKER",
+                "DATA",
+                "VOLTOT",
+            ],
+            low_memory=False,
+        )
+
+        frames.append(df)
+
+    market = pd.concat(
+        frames,
+        ignore_index=True,
+    )
+
+    del frames
+
+    market["TICKER"] = (
+        market["TICKER"]
+        .map(normalize_ticker)
+    )
+
+    market["DATA"] = pd.to_datetime(
+        market["DATA"],
+        errors="coerce",
+    )
+
+    market["VOLTOT"] = pd.to_numeric(
+        market["VOLTOT"],
+        errors="coerce",
+    )
+
+    market = market.dropna(
+        subset=[
+            "TICKER",
+            "DATA",
+            "VOLTOT",
+        ]
+    )
+
+    market = market[
+        market["VOLTOT"] >= 0
+    ].copy()
+
+    # Proteção contra eventual duplicidade
+    # entre fontes anuais.
+    market = (
+        market
+        .groupby(
+            [
+                "TICKER",
+                "DATA",
+            ],
+            as_index=False,
+            sort=False,
+        )["VOLTOT"]
+        .sum()
+    )
+
+    market = (
+        market
+        .sort_values(
+            [
+                "DATA",
+                "TICKER",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+    return market
+
+
+# ============================================================
+# CONSOLIDATE SPRE ONCE
+# ============================================================
+
+def consolidate_spre(
+    state: dict,
+) -> pd.DataFrame:
+
+    frames = []
+
+    entries = sorted(
+        state["spre"].keys()
+    )
+
+    if not entries:
+
+        raise DataInsufficientError(
+            "Nenhuma partição SPRE disponível."
+        )
+
+    log(
+        "  Partições SPRE:",
+        len(entries),
+    )
+
+    for index, filename in enumerate(
+        entries,
+        start=1,
+    ):
+
+        source = (
+            CURRENT_YEAR_DIR
+            /
+            filename
+        )
+
+        partition = spre_cache_path(
+            source
+        )
+
+        if not valid_spre_partition(
+            partition
+        ):
+
+            log(
+                "    ! Partição SPRE inválida:",
+                partition.name,
+            )
+
+            continue
+
+        if (
+            index == 1
+            or
+            index % 25 == 0
+            or
+            index == len(entries)
+        ):
+
+            log(
+                f"    Lendo SPRE "
+                f"{index}/{len(entries)}"
+            )
+
+        df = pd.read_csv(
+            partition,
+            low_memory=False,
+        )
+
+        for column in SPRE_COLUMNS:
+
+            if column not in df.columns:
+                df[column] = pd.NA
+
+        frames.append(
+            df[SPRE_COLUMNS].copy()
+        )
+
+    if not frames:
+
+        raise DataInsufficientError(
+            "Nenhuma partição SPRE válida "
+            "para consolidação."
+        )
+
+    spre = pd.concat(
+        frames,
+        ignore_index=True,
+    )
+
+    del frames
+
+    spre["TICKER"] = (
+        spre["TICKER"]
+        .map(normalize_ticker)
+    )
+
+    spre["DATA"] = pd.to_datetime(
+        spre["DATA"],
+        errors="coerce",
+    )
+
+    numeric_columns = [
+        "FIRST_PRICE",
+        "LOW_PRICE",
+        "HIGH_PRICE",
+        "AVG_PRICE",
+        "LAST_PRICE",
+        "REGULAR_TRADES_QTY",
+    ]
+
+    for column in numeric_columns:
+
+        spre[column] = pd.to_numeric(
+            spre[column],
+            errors="coerce",
+        )
+
+    spre = spre.dropna(
+        subset=[
+            "TICKER",
+            "DATA",
+        ]
+    )
+
+    spre = (
+        spre
+        .sort_values(
+            [
+                "DATA",
+                "TICKER",
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "DATA",
+                "TICKER",
+            ],
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
+
+    return spre
+
+
+# ============================================================
+# AUDIT
 # ============================================================
 
 def audit_market_history(
@@ -1929,19 +1828,6 @@ def audit_market_history(
             "SPRE de preços vazio."
         )
 
-    market = market.copy()
-    spre_prices = spre_prices.copy()
-
-    market["DATA"] = pd.to_datetime(
-        market["DATA"],
-        errors="coerce",
-    )
-
-    spre_prices["DATA"] = pd.to_datetime(
-        spre_prices["DATA"],
-        errors="coerce",
-    )
-
     historical_latest = (
         market["DATA"].max()
     )
@@ -1958,17 +1844,13 @@ def audit_market_history(
         spre_prices["DATA"].min()
     )
 
-    if pd.isna(
-        historical_latest
-    ):
+    if pd.isna(historical_latest):
 
         raise DataInsufficientError(
             "Última data COTAHIST inválida."
         )
 
-    if pd.isna(
-        spre_latest
-    ):
+    if pd.isna(spre_latest):
 
         raise DataInsufficientError(
             "Última data SPRE inválida."
@@ -2016,11 +1898,7 @@ def audit_market_history(
             .isoformat(),
 
         "liquidity_rows":
-            int(
-                len(
-                    market
-                )
-            ),
+            int(len(market)),
 
         "liquidity_tickers":
             int(
@@ -2030,11 +1908,7 @@ def audit_market_history(
             ),
 
         "spre_rows":
-            int(
-                len(
-                    spre_prices
-                )
-            ),
+            int(len(spre_prices)),
 
         "spre_tickers":
             int(
@@ -2046,13 +1920,18 @@ def audit_market_history(
 
 
 # ============================================================
-# PUBLICAÇÃO DOS SNAPSHOTS
+# PUBLICATION
 # ============================================================
 
 def publish_outputs(
     market: pd.DataFrame,
     spre: pd.DataFrame,
 ) -> None:
+
+    log(
+        "  Gravando market_history_live.csv "
+        "UMA VEZ..."
+    )
 
     market_out = market[
         [
@@ -2072,24 +1951,18 @@ def publish_outputs(
         )
     )
 
-    market_out = (
-        market_out
-        .dropna(
-            subset=[
-                "TICKER",
-                "DATA",
-                "VOLTOT",
-            ]
-        )
-        .sort_values(
-            [
-                "DATA",
-                "TICKER",
-            ]
-        )
-        .reset_index(
-            drop=True
-        )
+    write_csv_atomic(
+        market_out,
+        OUTPUT_FILE,
+    )
+
+    log(
+        "    ✓ market_history_live.csv"
+    )
+
+    log(
+        "  Gravando spre_prices_live.csv "
+        "UMA VEZ..."
     )
 
     spre_out = spre[
@@ -2106,54 +1979,13 @@ def publish_outputs(
         )
     )
 
-    spre_out = (
-        spre_out
-        .dropna(
-            subset=[
-                "TICKER",
-                "DATA",
-            ]
-        )
-        .sort_values(
-            [
-                "DATA",
-                "TICKER",
-            ]
-        )
-        .drop_duplicates(
-            subset=[
-                "DATA",
-                "TICKER",
-            ],
-            keep="last",
-        )
-        .reset_index(
-            drop=True
-        )
-    )
-
-    # Estado interno persistente
-
-    write_csv_atomic(
-        market_out,
-        MARKET_SNAPSHOT_FILE,
-    )
-
-    write_csv_atomic(
-        spre_out,
-        SPRE_SNAPSHOT_FILE,
-    )
-
-    # Interfaces oficiais consumidas pelo restante do robô
-
-    write_csv_atomic(
-        market_out,
-        OUTPUT_FILE,
-    )
-
     write_csv_atomic(
         spre_out,
         SPRE_PRICE_FILE,
+    )
+
+    log(
+        "    ✓ spre_prices_live.csv"
     )
 
 
@@ -2163,142 +1995,150 @@ def publish_outputs(
 
 def build_b3_market_history():
 
-    print(
+    log(
         "=" * 72
     )
 
-    print(
+    log(
         "B3 INVESTMENT ENGINE — "
-        "BUILD MARKET HISTORY V4 "
-        "INCREMENTAL"
+        "BUILD MARKET HISTORY V5"
     )
 
-    print(
+    log(
+        "PARTITIONED INCREMENTAL CACHE"
+    )
+
+    log(
         "=" * 72
     )
 
     # ========================================================
-    # ESTADO
+    # 1. STATE
     # ========================================================
 
-    print(
-        "\n[1/4] Carregando estado incremental..."
+    log(
+        "\n[1/5] Carregando estado..."
     )
 
     state = load_state()
 
-    market = load_market_snapshot()
-
-    spre = load_spre_snapshot()
-
-    print(
-        "Registros liquidez já persistidos:",
-        len(
-            market
-        ),
+    log(
+        "COTAHIST registrados:",
+        len(state["cotahist"]),
     )
 
-    print(
-        "Registros SPRE já persistidos:",
-        len(
-            spre
-        ),
-    )
-
-    print(
-        "COTAHIST registrados no estado:",
-        len(
-            state["cotahist"]
-        ),
-    )
-
-    print(
-        "SPRE registrados no estado:",
-        len(
-            state["spre"]
-        ),
+    log(
+        "SPRE registrados:",
+        len(state["spre"]),
     )
 
     # ========================================================
-    # COTAHIST
+    # 2. COTAHIST PARTITIONS
     # ========================================================
 
-    print(
-        "\n[2/4] Atualização incremental COTAHIST..."
+    log(
+        "\n[2/5] Atualizando partições COTAHIST..."
     )
 
     (
-        market,
         years_loaded,
         cotahist_stats,
-    ) = update_cotahist_snapshot(
-        market,
-        state,
+    ) = update_cotahist_partitions(
+        state
     )
 
-    print(
-        "\nAnos disponíveis:",
+    log(
+        "Anos disponíveis:",
         years_loaded,
     )
 
-    print(
-        "COTAHIST já incorporados:",
-        cotahist_stats[
-            "unchanged"
-        ],
+    log(
+        "COTAHIST reaproveitados:",
+        cotahist_stats["unchanged"],
     )
 
-    print(
+    log(
         "COTAHIST processados agora:",
-        cotahist_stats[
-            "processed"
-        ],
+        cotahist_stats["processed"],
     )
 
     # ========================================================
-    # SPRE
+    # 3. SPRE PARTITIONS
     # ========================================================
 
-    print(
-        "\n[3/4] Atualização incremental SPRE..."
+    log(
+        "\n[3/5] Atualizando partições SPRE..."
     )
 
     (
-        spre,
         failures,
         spre_stats,
-    ) = update_spre_snapshot(
-        spre,
-        state,
+    ) = update_spre_partitions(
+        state
     )
 
-    print(
-        "\nSPRE já incorporados:",
-        spre_stats[
-            "unchanged"
-        ],
+    log(
+        "SPRE reaproveitados:",
+        spre_stats["unchanged"],
     )
 
-    print(
+    log(
         "SPRE processados agora:",
-        spre_stats[
-            "processed"
-        ],
+        spre_stats["processed"],
     )
 
-    print(
+    log(
         "Falhas SPRE:",
-        len(
-            failures
-        ),
+        len(failures),
+    )
+
+    # Remove cache referente a fonte
+    # que deixou de existir.
+
+    remove_stale_partitions(
+        state
     )
 
     # ========================================================
-    # AUDITORIA + PUBLICAÇÃO
+    # 4. CONSOLIDATION
     # ========================================================
 
-    print(
-        "\n[4/4] Auditoria e publicação..."
+    log(
+        "\n[4/5] Consolidação única..."
+    )
+
+    log(
+        "Consolidando COTAHIST..."
+    )
+
+    market = consolidate_cotahist(
+        state
+    )
+
+    log(
+        "  ✓ Registros COTAHIST:",
+        len(market),
+    )
+
+    log(
+        "Consolidando SPRE..."
+    )
+
+    spre = consolidate_spre(
+        state
+    )
+
+    log(
+        "  ✓ Registros SPRE:",
+        len(spre),
+    )
+
+    # ========================================================
+    # 5. AUDIT + PUBLICATION
+    # ========================================================
+
+    log(
+        "\n[5/5] Auditoria e publicação..."
     )
 
     audit = audit_market_history(
@@ -2311,9 +2151,7 @@ def build_b3_market_history():
         spre,
     )
 
-    save_state(
-        state
-    )
+    save_state(state)
 
     # ========================================================
     # MANIFEST
@@ -2336,7 +2174,7 @@ def build_b3_market_history():
             "OK_WITH_SOURCE_LIMITATION",
 
         "architecture":
-            "INCREMENTAL_PERSISTENT_SNAPSHOT",
+            "PARTITIONED_INCREMENTAL_CACHE",
 
         "source_historical":
             "B3 COTAHIST",
@@ -2461,30 +2299,25 @@ def build_b3_market_history():
                 MINIMUM_DAILY_LIQUIDITY_BRL,
         },
 
-        "state_file":
-            str(
-                STATE_FILE
-            ),
+        "cache": {
+            "root":
+                str(CACHE_ROOT),
 
-        "market_snapshot":
-            str(
-                MARKET_SNAPSHOT_FILE
-            ),
+            "cotahist_parts":
+                str(COTAHIST_CACHE_DIR),
 
-        "spre_snapshot":
-            str(
-                SPRE_SNAPSHOT_FILE
-            ),
+            "spre_parts":
+                str(SPRE_CACHE_DIR),
+
+            "state_file":
+                str(STATE_FILE),
+        },
 
         "output_liquidity_file":
-            str(
-                OUTPUT_FILE
-            ),
+            str(OUTPUT_FILE),
 
         "output_spre_price_file":
-            str(
-                SPRE_PRICE_FILE
-            ),
+            str(SPRE_PRICE_FILE),
     }
 
     write_json_atomic(
@@ -2496,142 +2329,142 @@ def build_b3_market_history():
     # FINAL
     # ========================================================
 
-    print(
+    log(
         "\n"
         + "=" * 72
     )
 
-    print(
+    log(
         "B3 MARKET HISTORY — OK"
     )
 
-    print(
+    log(
         "=" * 72
     )
 
-    print(
+    log(
         "COTAHIST primeira data:",
         audit[
             "historical_first_date"
         ],
     )
 
-    print(
+    log(
         "COTAHIST última data:",
         audit[
             "historical_latest_date"
         ],
     )
 
-    print(
+    log(
         "SPRE primeira data:",
         audit[
             "spre_first_date"
         ],
     )
 
-    print(
+    log(
         "SPRE última data:",
         audit[
             "spre_latest_date"
         ],
     )
 
-    print(
+    log(
         "Registros liquidez:",
         audit[
             "liquidity_rows"
         ],
     )
 
-    print(
+    log(
         "Tickers liquidez:",
         audit[
             "liquidity_tickers"
         ],
     )
 
-    print(
+    log(
         "Registros SPRE:",
         audit[
             "spre_rows"
         ],
     )
 
-    print(
+    log(
         "Tickers SPRE:",
         audit[
             "spre_tickers"
         ],
     )
 
-    print()
+    log()
 
-    print(
+    log(
         "COTAHIST processados nesta execução:",
         cotahist_stats[
             "processed"
         ],
     )
 
-    print(
+    log(
         "SPRE processados nesta execução:",
         spre_stats[
             "processed"
         ],
     )
 
-    print(
+    log(
         "COTAHIST reaproveitados:",
         cotahist_stats[
             "unchanged"
         ],
     )
 
-    print(
+    log(
         "SPRE reaproveitados:",
         spre_stats[
             "unchanged"
         ],
     )
 
-    print()
+    log()
 
-    print(
+    log(
         "ATENÇÃO:"
     )
 
-    print(
+    log(
         "BVBG.186.01 não fornece VOLTOT."
     )
 
-    print(
+    log(
         "RglrTxsQty NÃO foi convertido "
         "em volume financeiro."
     )
 
-    print(
+    log(
         "Metodologia de liquidez preservada."
     )
 
-    print()
+    log()
 
-    print(
+    log(
         "Saída liquidez:",
         OUTPUT_FILE,
     )
 
-    print(
+    log(
         "Saída preços SPRE:",
         SPRE_PRICE_FILE,
     )
 
-    print(
-        "Estado incremental:",
-        STATE_FILE,
+    log(
+        "Cache particionado:",
+        CACHE_ROOT,
     )
 
-    print(
+    log(
         "=" * 72
     )
 
@@ -2673,6 +2506,7 @@ def main():
             "\nDATA_INSUFFICIENT:",
             exc,
             file=sys.stderr,
+            flush=True,
         )
 
         return 3
@@ -2681,10 +2515,9 @@ def main():
 
         print(
             "\nERROR:",
-            repr(
-                exc
-            ),
+            repr(exc),
             file=sys.stderr,
+            flush=True,
         )
 
         return 1
