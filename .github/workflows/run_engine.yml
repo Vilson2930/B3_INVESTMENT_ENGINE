@@ -97,22 +97,16 @@ jobs:
       # 7. RESTAURAR CACHE PERSISTENTE B3
       # ======================================================
       #
-      # O runner do GitHub nasce limpo em cada execução.
+      # Preserva entre runners:
       #
-      # Este cache preserva:
+      # 1. COTAHIST histórico oficial;
+      # 2. SPRE do ano corrente;
+      # 3. snapshots incrementais processados.
       #
-      # - COTAHIST já baixado;
-      # - cache de processamento do market history.
+      # O cache NÃO congela os dados.
       #
-      # IMPORTANTE:
-      # isso NÃO congela os dados.
-      #
-      # update_b3_data.py continua sendo executado em TODA
-      # rodada e verifica se existem arquivos históricos
-      # necessários ausentes.
-      #
-      # O ano corrente também continua sendo atualizado
-      # separadamente em TODA execução.
+      # Os scripts de atualização continuam sendo executados
+      # em toda rodada e verificam novos dados oficiais.
       # ======================================================
 
       - name: Restore B3 persistent cache
@@ -121,10 +115,11 @@ jobs:
         with:
           path: |
             data/live/b3/cotahist
+            data/live/b3/current_year
             data/live/b3/cache
-          key: b3-market-${{ runner.os }}-${{ github.run_id }}
+          key: b3-live-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            b3-market-${{ runner.os }}-
+            b3-live-${{ runner.os }}-
 
 
       # ======================================================
@@ -141,9 +136,8 @@ jobs:
           echo "${{ steps.b3-cache.outputs.cache-hit }}"
 
           echo ""
-
+          echo "COTAHIST:"
           if [ -d "data/live/b3/cotahist" ]; then
-            echo "COTAHIST disponíveis:"
             find data/live/b3/cotahist \
               -maxdepth 1 \
               -type f \
@@ -151,20 +145,40 @@ jobs:
               | sort
           else
             echo "Nenhum COTAHIST restaurado."
-            echo "Será criado nesta execução."
           fi
 
           echo ""
+          echo "SPRE ANO CORRENTE:"
+          if [ -d "data/live/b3/current_year" ]; then
+            COUNT=$(find data/live/b3/current_year \
+              -maxdepth 1 \
+              -type f \
+              -name 'SPRE*.zip' \
+              | wc -l)
 
+            echo "Arquivos SPRE restaurados: $COUNT"
+
+            find data/live/b3/current_year \
+              -maxdepth 1 \
+              -type f \
+              -name 'SPRE*.zip' \
+              -print \
+              | sort \
+              | tail -10
+          else
+            echo "Nenhum SPRE restaurado."
+          fi
+
+          echo ""
+          echo "SNAPSHOTS/CACHE:"
           if [ -d "data/live/b3/cache" ]; then
-            echo "Caches de processamento:"
             find data/live/b3/cache \
               -maxdepth 3 \
               -type f \
               -print \
               | sort
           else
-            echo "Nenhum cache de processamento restaurado."
+            echo "Nenhum snapshot restaurado."
           fi
 
           echo "=========================================="
@@ -242,16 +256,10 @@ jobs:
       # 11. ATUALIZAR HISTÓRICO OFICIAL B3
       # ======================================================
       #
-      # Executa SEMPRE.
+      # Executa sempre.
       #
-      # O próprio update_b3_data.py decide:
-      #
-      # - arquivo existente e válido -> reutiliza;
-      # - arquivo ausente/inválido   -> baixa novamente.
-      #
-      # Portanto:
-      #
-      # CACHE != DADOS CONGELADOS.
+      # Histórico existente e válido é reutilizado.
+      # Arquivo ausente/inválido é recuperado.
       # ======================================================
 
       - name: Update official B3 historical data
@@ -271,10 +279,14 @@ jobs:
       # 12. ATUALIZAR ANO CORRENTE B3
       # ======================================================
       #
-      # Esta etapa também executa SEMPRE.
+      # update_b3_current_year.py V2 incremental.
       #
-      # O objetivo é buscar o dado disponível do ano/pregão
-      # corrente independentemente do cache histórico.
+      # Primeira carga:
+      # bootstrap do ano.
+      #
+      # Execuções seguintes:
+      # verifica apenas a janela necessária para encontrar
+      # pregões novos/atrasados.
       # ======================================================
 
       - name: Update current-year B3 data
@@ -291,16 +303,16 @@ jobs:
 
 
       # ======================================================
-      # 13. CONSTRUIR HISTÓRICO DE MERCADO LIVE
+      # 13. CONSTRUIR MARKET HISTORY LIVE
       # ======================================================
       #
-      # build_b3_market_history.py V3:
+      # build_b3_market_history.py V4:
       #
-      # - reutiliza cache por arquivo;
-      # - processa somente arquivo novo/alterado;
-      # - mantém COTAHIST como fonte do VOLTOT;
-      # - mantém SPRE como fonte de preço atual;
-      # - não converte RglrTxsQty em VOLTOT.
+      # - snapshot persistente;
+      # - COTAHIST já incorporado não é reprocessado;
+      # - SPRE já incorporado não é reprocessado;
+      # - novo pregão é incorporado;
+      # - checkpoint após cada fonte processada.
       # ======================================================
 
       - name: Build B3 market history LIVE
@@ -317,22 +329,26 @@ jobs:
             exit 1
           fi
 
-          echo ""
-          echo "market_history_live.csv: OK"
-
-          if [ -f "data/live/b3/spre_prices_live.csv" ]; then
-            echo "spre_prices_live.csv: OK"
-          else
+          if [ ! -f "data/live/b3/spre_prices_live.csv" ]; then
             echo "ERRO:"
-            echo "spre_prices_live.csv não encontrado."
+            echo "spre_prices_live.csv não foi criado."
             exit 1
           fi
 
-          if [ -f "data/live/b3/market_history_manifest.json" ]; then
-            echo ""
-            echo "Manifesto B3:"
-            cat data/live/b3/market_history_manifest.json
+          if [ ! -f "data/live/b3/market_history_manifest.json" ]; then
+            echo "ERRO:"
+            echo "market_history_manifest.json não foi criado."
+            exit 1
           fi
+
+          echo ""
+          echo "market_history_live.csv: OK"
+          echo "spre_prices_live.csv: OK"
+          echo "market_history_manifest.json: OK"
+
+          echo ""
+          echo "Manifesto:"
+          cat data/live/b3/market_history_manifest.json
 
 
       # ======================================================
@@ -422,13 +438,7 @@ jobs:
               .str.upper()
           )
 
-          duplicated = (
-              tickers
-              .duplicated()
-              .sum()
-          )
-
-          if duplicated:
+          if tickers.duplicated().any():
               raise SystemExit(
                   "ERRO: tickers duplicados no "
                   "fundamental_input_live.csv."
@@ -466,14 +476,15 @@ jobs:
       # 16. VALIDAR BASE TÉCNICA ATUAL
       # ======================================================
       #
-      # ETAPA TRANSITÓRIA.
+      # TRANSITÓRIO:
       #
-      # Neste momento o workflow ainda consome:
+      # A camada fundamental já está LIVE.
       #
+      # A camada técnica ainda utiliza:
       # data/technical_prices.csv
       #
-      # A substituição pela camada técnica LIVE será feita
-      # depois que a cadeia B3 LIVE estiver estável.
+      # Não declarar o robô 100% LIVE antes da substituição
+      # desta camada.
       # ======================================================
 
       - name: Validate current technical input
@@ -610,7 +621,7 @@ jobs:
 
 
       # ======================================================
-      # 19. VALIDAR RESULTADO DO MOTOR
+      # 19. VALIDAR RESULTADO
       # ======================================================
 
       - name: Validate engine results
