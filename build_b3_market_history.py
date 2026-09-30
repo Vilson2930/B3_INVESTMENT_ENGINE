@@ -1,6 +1,6 @@
 # ============================================================
 # B3 INVESTMENT ENGINE
-# BUILD B3 MARKET HISTORY — V5 PARTITIONED INCREMENTAL CACHE
+# BUILD B3 MARKET HISTORY — V6 BATCHED PERSISTENT CACHE
 # ============================================================
 #
 # OBJETIVO
@@ -17,21 +17,26 @@
 #    - fonte: B3 BVBG.186.01;
 #    - NÃO transforma RglrTxsQty em VOLTOT.
 #
-# ARQUITETURA V5
+# ARQUITETURA V6
 # ------------------------------------------------------------
 # - cache particionado por arquivo-fonte;
-# - cada COTAHIST anual gera somente sua própria partição;
-# - cada SPRE gera somente sua própria partição;
+# - cada COTAHIST anual gera sua própria partição;
+# - cada SPRE gera sua própria partição;
 # - fonte já processada e inalterada não é reprocessada;
-# - NÃO regrava snapshot acumulado após cada arquivo;
-# - consolidação global ocorre UMA VEZ no final;
-# - arquivos novos entram normalmente;
 # - identidade da fonte usa SHA-256 e não mtime;
+# - SPRE é processado em LOTES recuperáveis;
+# - cada execução processa quantidade limitada de SPRE;
+# - estado é salvo após CADA partição;
+# - execução encerra normalmente quando ainda existem
+#   partições SPRE pendentes;
+# - consolidação global ocorre somente quando todas as
+#   partições necessárias estão prontas;
+# - arquivos novos entram normalmente;
 # - metodologia financeira permanece congelada.
 #
-# METODOLOGIA
+# IMPORTANTE
 # ------------------------------------------------------------
-# NÃO altera:
+# Este módulo NÃO altera:
 # - Sector Engine;
 # - Quality Engine;
 # - Investability Engine;
@@ -43,6 +48,20 @@
 # - liquidez média diária: R$ 6 milhões;
 # - SPRE NÃO fornece VOLTOT;
 # - RglrTxsQty NÃO é volume financeiro.
+#
+# CONTROLE DE LOTE
+# ------------------------------------------------------------
+# Variável opcional:
+#
+# B3_MARKET_HISTORY_SPRE_BATCH_SIZE
+#
+# Default: 25 arquivos SPRE por execução.
+#
+# O workflow deve persistir:
+#
+# data/live/b3/cache/market_history_v6
+#
+# após cada execução.
 # ============================================================
 
 from __future__ import annotations
@@ -50,6 +69,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import sys
 import zipfile
@@ -78,12 +98,13 @@ OUTPUT_FILE = B3_DIR / "market_history_live.csv"
 SPRE_PRICE_FILE = B3_DIR / "spre_prices_live.csv"
 MANIFEST_FILE = B3_DIR / "market_history_manifest.json"
 
-CACHE_ROOT = B3_DIR / "cache" / "market_history_v5"
+CACHE_ROOT = B3_DIR / "cache" / "market_history_v6"
 
 COTAHIST_CACHE_DIR = CACHE_ROOT / "cotahist_parts"
 SPRE_CACHE_DIR = CACHE_ROOT / "spre_parts"
 
 STATE_FILE = CACHE_ROOT / "state.json"
+BUILD_STATUS_FILE = CACHE_ROOT / "build_status.json"
 
 
 # ============================================================
@@ -95,13 +116,15 @@ CURRENT_YEAR = datetime.now(timezone.utc).year
 VALID_MARKET_TYPE = "010"
 
 METHODOLOGY_VERSION = (
-    "B3_MARKET_HISTORY_V5_PARTITIONED_INCREMENTAL_CACHE"
+    "B3_MARKET_HISTORY_V6_BATCHED_PERSISTENT_CACHE"
 )
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 MINIMUM_HISTORY_YEARS = 10
 MINIMUM_DAILY_LIQUIDITY_BRL = 6_000_000
+
+DEFAULT_SPRE_BATCH_SIZE = 25
 
 SPRE_COLUMNS = [
     "TICKER",
@@ -155,9 +178,7 @@ def utc_now_iso() -> str:
     ).isoformat()
 
 
-def log(
-    *args,
-) -> None:
+def log(*args) -> None:
 
     print(
         *args,
@@ -215,9 +236,7 @@ def write_csv_atomic(
     tmp.replace(path)
 
 
-def normalize_ticker(
-    value,
-):
+def normalize_ticker(value):
 
     if pd.isna(value):
         return None
@@ -234,9 +253,7 @@ def normalize_ticker(
     return value
 
 
-def local_name(
-    tag: str,
-) -> str:
+def local_name(tag: str) -> str:
 
     if "}" in tag:
         return tag.rsplit(
@@ -247,9 +264,7 @@ def local_name(
     return tag
 
 
-def safe_float(
-    value,
-):
+def safe_float(value):
 
     if value is None:
         return None
@@ -269,17 +284,36 @@ def safe_float(
         return None
 
 
+def get_spre_batch_size() -> int:
+
+    raw = os.getenv(
+        "B3_MARKET_HISTORY_SPRE_BATCH_SIZE",
+        str(DEFAULT_SPRE_BATCH_SIZE),
+    )
+
+    try:
+        value = int(raw)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        value = DEFAULT_SPRE_BATCH_SIZE
+
+    if value < 1:
+        value = DEFAULT_SPRE_BATCH_SIZE
+
+    return value
+
+
 # ============================================================
 # SOURCE IDENTITY
 # ============================================================
 #
-# IMPORTANT:
-# mtime is deliberately NOT used.
+# mtime NÃO é utilizado.
 #
-# GitHub runners can recreate files with a different
-# modification timestamp even when the official content
-# has not changed.
-#
+# GitHub runners podem recriar arquivos com timestamps
+# diferentes mesmo quando o conteúdo oficial é idêntico.
 # ============================================================
 
 def sha256_file(
@@ -375,11 +409,17 @@ def load_state() -> dict:
     except Exception:
         return empty_state()
 
-    if (
-        state.get("state_version")
-        != STATE_VERSION
+    if not isinstance(
+        state,
+        dict,
     ):
         return empty_state()
+
+    #
+    # Migração segura V5 -> V6.
+    #
+    # As identidades das fontes permanecem válidas.
+    #
 
     if not isinstance(
         state.get("cotahist"),
@@ -393,6 +433,8 @@ def load_state() -> dict:
     ):
         state["spre"] = {}
 
+    state["state_version"] = STATE_VERSION
+
     return state
 
 
@@ -400,13 +442,48 @@ def save_state(
     state: dict,
 ) -> None:
 
-    state["generated_at_utc"] = (
-        utc_now_iso()
-    )
+    state["state_version"] = STATE_VERSION
+    state["generated_at_utc"] = utc_now_iso()
 
     write_json_atomic(
         state,
         STATE_FILE,
+    )
+
+
+# ============================================================
+# BUILD STATUS
+# ============================================================
+
+def write_build_status(
+    *,
+    complete: bool,
+    phase: str,
+    total_spre: int = 0,
+    ready_spre: int = 0,
+    pending_spre: int = 0,
+    processed_now: int = 0,
+    message: str = "",
+) -> None:
+
+    payload = {
+        "engine": "B3_INVESTMENT_ENGINE",
+        "module": "build_b3_market_history",
+        "version": METHODOLOGY_VERSION,
+        "generated_at_utc": utc_now_iso(),
+        "complete": bool(complete),
+        "phase": phase,
+        "current_year": CURRENT_YEAR,
+        "spre_total": int(total_spre),
+        "spre_ready": int(ready_spre),
+        "spre_pending": int(pending_spre),
+        "spre_processed_now": int(processed_now),
+        "message": message,
+    }
+
+    write_json_atomic(
+        payload,
+        BUILD_STATUS_FILE,
     )
 
 
@@ -418,13 +495,11 @@ def safe_cache_name(
     filename: str,
 ) -> str:
 
-    value = re.sub(
+    return re.sub(
         r"[^A-Za-z0-9_.-]+",
         "_",
         filename,
     )
-
-    return value
 
 
 def cotahist_cache_path(
@@ -1332,31 +1407,23 @@ def update_cotahist_partitions(
 
 
 # ============================================================
-# SPRE PARTITION UPDATE
+# SPRE STATUS
 # ============================================================
 
-def update_spre_partitions(
+def inspect_spre_partitions(
     state: dict,
 ):
 
     files = list_spre_files()
 
-    processed = 0
-    unchanged = 0
-    failures = []
+    ready = []
+    pending = []
 
-    for index, path in enumerate(
-        files,
-        start=1,
-    ):
+    for path in files:
 
-        log(
-            f"  SPRE "
-            f"{index}/{len(files)} "
-            f"- {path.name}"
+        identity = source_identity(
+            path
         )
-
-        identity = source_identity(path)
 
         partition = spre_cache_path(
             path
@@ -1378,12 +1445,108 @@ def update_spre_partitions(
             )
         ):
 
-            log(
-                "    ✓ CACHE VÁLIDO"
+            ready.append(
+                (
+                    path,
+                    identity,
+                )
             )
 
-            unchanged += 1
-            continue
+        else:
+
+            pending.append(
+                (
+                    path,
+                    identity,
+                )
+            )
+
+    return files, ready, pending
+
+
+# ============================================================
+# SPRE PARTITION UPDATE — V6 BATCHED
+# ============================================================
+
+def update_spre_partitions(
+    state: dict,
+    batch_size: int,
+):
+
+    (
+        files,
+        ready_before,
+        pending_before,
+    ) = inspect_spre_partitions(
+        state
+    )
+
+    total_files = len(files)
+    ready_count_before = len(
+        ready_before
+    )
+    pending_count_before = len(
+        pending_before
+    )
+
+    log(
+        "SPRE total:",
+        total_files,
+    )
+
+    log(
+        "SPRE já prontos:",
+        ready_count_before,
+    )
+
+    log(
+        "SPRE pendentes:",
+        pending_count_before,
+    )
+
+    log(
+        "Limite desta execução:",
+        batch_size,
+    )
+
+    if not pending_before:
+
+        return (
+            [],
+            {
+                "files": total_files,
+                "unchanged": ready_count_before,
+                "processed": 0,
+                "ready": total_files,
+                "pending": 0,
+                "complete": True,
+            },
+        )
+
+    selected = pending_before[
+        :batch_size
+    ]
+
+    failures = []
+    processed = 0
+
+    for index, (
+        path,
+        identity,
+    ) in enumerate(
+        selected,
+        start=1,
+    ):
+
+        log(
+            f"  SPRE LOTE "
+            f"{index}/{len(selected)} "
+            f"- {path.name}"
+        )
+
+        partition = spre_cache_path(
+            path
+        )
 
         try:
 
@@ -1425,6 +1588,11 @@ def update_spre_partitions(
                 partition,
             )
 
+            #
+            # CRÍTICO V6:
+            # estado salvo imediatamente após a partição.
+            #
+
             state["spre"][
                 path.name
             ] = identity
@@ -1452,12 +1620,35 @@ def update_spre_partitions(
                 str(exc),
             )
 
+    (
+        _,
+        ready_after,
+        pending_after,
+    ) = inspect_spre_partitions(
+        state
+    )
+
+    ready_count_after = len(
+        ready_after
+    )
+
+    pending_count_after = len(
+        pending_after
+    )
+
+    complete = (
+        pending_count_after == 0
+    )
+
     return (
         failures,
         {
-            "files": len(files),
-            "unchanged": unchanged,
+            "files": total_files,
+            "unchanged": ready_count_before,
             "processed": processed,
+            "ready": ready_count_after,
+            "pending": pending_count_after,
+            "complete": complete,
         },
     )
 
@@ -1632,8 +1823,6 @@ def consolidate_cotahist(
         market["VOLTOT"] >= 0
     ].copy()
 
-    # Proteção contra eventual duplicidade
-    # entre fontes anuais.
     market = (
         market
         .groupby(
@@ -1705,12 +1894,11 @@ def consolidate_spre(
             partition
         ):
 
-            log(
-                "    ! Partição SPRE inválida:",
-                partition.name,
+            raise DataInsufficientError(
+                "Partição SPRE ausente "
+                "ou inválida: "
+                f"{partition}"
             )
-
-            continue
 
         if (
             index == 1
@@ -1990,174 +2178,18 @@ def publish_outputs(
 
 
 # ============================================================
-# BUILD
+# MANIFEST
 # ============================================================
 
-def build_b3_market_history():
+def build_manifest(
+    *,
+    audit: dict,
+    cotahist_stats: dict,
+    spre_stats: dict,
+    failures: list,
+) -> dict:
 
-    log(
-        "=" * 72
-    )
-
-    log(
-        "B3 INVESTMENT ENGINE — "
-        "BUILD MARKET HISTORY V5"
-    )
-
-    log(
-        "PARTITIONED INCREMENTAL CACHE"
-    )
-
-    log(
-        "=" * 72
-    )
-
-    # ========================================================
-    # 1. STATE
-    # ========================================================
-
-    log(
-        "\n[1/5] Carregando estado..."
-    )
-
-    state = load_state()
-
-    log(
-        "COTAHIST registrados:",
-        len(state["cotahist"]),
-    )
-
-    log(
-        "SPRE registrados:",
-        len(state["spre"]),
-    )
-
-    # ========================================================
-    # 2. COTAHIST PARTITIONS
-    # ========================================================
-
-    log(
-        "\n[2/5] Atualizando partições COTAHIST..."
-    )
-
-    (
-        years_loaded,
-        cotahist_stats,
-    ) = update_cotahist_partitions(
-        state
-    )
-
-    log(
-        "Anos disponíveis:",
-        years_loaded,
-    )
-
-    log(
-        "COTAHIST reaproveitados:",
-        cotahist_stats["unchanged"],
-    )
-
-    log(
-        "COTAHIST processados agora:",
-        cotahist_stats["processed"],
-    )
-
-    # ========================================================
-    # 3. SPRE PARTITIONS
-    # ========================================================
-
-    log(
-        "\n[3/5] Atualizando partições SPRE..."
-    )
-
-    (
-        failures,
-        spre_stats,
-    ) = update_spre_partitions(
-        state
-    )
-
-    log(
-        "SPRE reaproveitados:",
-        spre_stats["unchanged"],
-    )
-
-    log(
-        "SPRE processados agora:",
-        spre_stats["processed"],
-    )
-
-    log(
-        "Falhas SPRE:",
-        len(failures),
-    )
-
-    # Remove cache referente a fonte
-    # que deixou de existir.
-
-    remove_stale_partitions(
-        state
-    )
-
-    # ========================================================
-    # 4. CONSOLIDATION
-    # ========================================================
-
-    log(
-        "\n[4/5] Consolidação única..."
-    )
-
-    log(
-        "Consolidando COTAHIST..."
-    )
-
-    market = consolidate_cotahist(
-        state
-    )
-
-    log(
-        "  ✓ Registros COTAHIST:",
-        len(market),
-    )
-
-    log(
-        "Consolidando SPRE..."
-    )
-
-    spre = consolidate_spre(
-        state
-    )
-
-    log(
-        "  ✓ Registros SPRE:",
-        len(spre),
-    )
-
-    # ========================================================
-    # 5. AUDIT + PUBLICATION
-    # ========================================================
-
-    log(
-        "\n[5/5] Auditoria e publicação..."
-    )
-
-    audit = audit_market_history(
-        market,
-        spre,
-    )
-
-    publish_outputs(
-        market,
-        spre,
-    )
-
-    save_state(state)
-
-    # ========================================================
-    # MANIFEST
-    # ========================================================
-
-    manifest = {
+    return {
         "engine":
             "B3_INVESTMENT_ENGINE",
 
@@ -2174,7 +2206,7 @@ def build_b3_market_history():
             "OK_WITH_SOURCE_LIMITATION",
 
         "architecture":
-            "PARTITIONED_INCREMENTAL_CACHE",
+            "BATCHED_PERSISTENT_CACHE",
 
         "source_historical":
             "B3 COTAHIST",
@@ -2261,6 +2293,21 @@ def build_b3_market_history():
                     "processed"
                 ],
 
+            "spre_ready":
+                spre_stats[
+                    "ready"
+                ],
+
+            "spre_pending":
+                spre_stats[
+                    "pending"
+                ],
+
+            "spre_complete":
+                spre_stats[
+                    "complete"
+                ],
+
             "spre_failures":
                 failures,
         },
@@ -2311,6 +2358,9 @@ def build_b3_market_history():
 
             "state_file":
                 str(STATE_FILE),
+
+            "build_status_file":
+                str(BUILD_STATUS_FILE),
         },
 
         "output_liquidity_file":
@@ -2320,9 +2370,319 @@ def build_b3_market_history():
             str(SPRE_PRICE_FILE),
     }
 
+
+# ============================================================
+# BUILD
+# ============================================================
+
+def build_b3_market_history():
+
+    log(
+        "=" * 72
+    )
+
+    log(
+        "B3 INVESTMENT ENGINE — "
+        "BUILD MARKET HISTORY V6"
+    )
+
+    log(
+        "BATCHED PERSISTENT CACHE"
+    )
+
+    log(
+        "=" * 72
+    )
+
+    batch_size = get_spre_batch_size()
+
+    log(
+        "SPRE batch size:",
+        batch_size,
+    )
+
+    # ========================================================
+    # 1. STATE
+    # ========================================================
+
+    log(
+        "\n[1/5] Carregando estado..."
+    )
+
+    state = load_state()
+
+    log(
+        "COTAHIST registrados:",
+        len(state["cotahist"]),
+    )
+
+    log(
+        "SPRE registrados:",
+        len(state["spre"]),
+    )
+
+    # ========================================================
+    # 2. COTAHIST PARTITIONS
+    # ========================================================
+
+    log(
+        "\n[2/5] Atualizando partições COTAHIST..."
+    )
+
+    (
+        years_loaded,
+        cotahist_stats,
+    ) = update_cotahist_partitions(
+        state
+    )
+
+    log(
+        "Anos disponíveis:",
+        years_loaded,
+    )
+
+    log(
+        "COTAHIST reaproveitados:",
+        cotahist_stats["unchanged"],
+    )
+
+    log(
+        "COTAHIST processados agora:",
+        cotahist_stats["processed"],
+    )
+
+    # ========================================================
+    # 3. SPRE PARTITIONS — BATCH
+    # ========================================================
+
+    log(
+        "\n[3/5] Atualizando partições SPRE..."
+    )
+
+    (
+        failures,
+        spre_stats,
+    ) = update_spre_partitions(
+        state,
+        batch_size,
+    )
+
+    log(
+        "SPRE existentes no início:",
+        spre_stats["unchanged"],
+    )
+
+    log(
+        "SPRE processados agora:",
+        spre_stats["processed"],
+    )
+
+    log(
+        "SPRE prontos:",
+        spre_stats["ready"],
+    )
+
+    log(
+        "SPRE pendentes:",
+        spre_stats["pending"],
+    )
+
+    log(
+        "Falhas SPRE:",
+        len(failures),
+    )
+
+    remove_stale_partitions(
+        state
+    )
+
+    save_state(state)
+
+    # ========================================================
+    # V6 — CHECKPOINT DE SAÍDA
+    # ========================================================
+
+    if not spre_stats["complete"]:
+
+        write_build_status(
+            complete=False,
+            phase="SPRE_PARTITIONS",
+            total_spre=spre_stats["files"],
+            ready_spre=spre_stats["ready"],
+            pending_spre=spre_stats["pending"],
+            processed_now=spre_stats["processed"],
+            message=(
+                "Lote SPRE concluído. "
+                "Persistir cache V6 e executar "
+                "novo lote."
+            ),
+        )
+
+        log()
+
+        log(
+            "=" * 72
+        )
+
+        log(
+            "B3 MARKET HISTORY V6 — "
+            "LOTE CONCLUÍDO"
+        )
+
+        log(
+            "=" * 72
+        )
+
+        log(
+            "SPRE total:",
+            spre_stats["files"],
+        )
+
+        log(
+            "SPRE prontos:",
+            spre_stats["ready"],
+        )
+
+        log(
+            "SPRE pendentes:",
+            spre_stats["pending"],
+        )
+
+        log(
+            "SPRE processados nesta execução:",
+            spre_stats["processed"],
+        )
+
+        log()
+
+        log(
+            "BUILD COMPLETE = false"
+        )
+
+        log(
+            "Próxima ação:"
+        )
+
+        log(
+            "Persistir cache market_history_v6 "
+            "e continuar em nova execução."
+        )
+
+        log(
+            "=" * 72
+        )
+
+        return {
+            "complete": False,
+            "phase": "SPRE_PARTITIONS",
+            "years_loaded": years_loaded,
+            "cotahist": cotahist_stats,
+            "spre": spre_stats,
+            "failures": failures,
+        }
+
+    # ========================================================
+    # Proteção:
+    # se alguma partição falhou, não publica snapshot parcial.
+    # ========================================================
+
+    if failures:
+
+        write_build_status(
+            complete=False,
+            phase="SPRE_FAILURE",
+            total_spre=spre_stats["files"],
+            ready_spre=spre_stats["ready"],
+            pending_spre=spre_stats["pending"],
+            processed_now=spre_stats["processed"],
+            message=(
+                "Existem falhas SPRE. "
+                "Snapshot final não publicado."
+            ),
+        )
+
+        raise DataInsufficientError(
+            "Existem falhas SPRE. "
+            "Publicação final bloqueada."
+        )
+
+    # ========================================================
+    # 4. CONSOLIDATION
+    # ========================================================
+
+    log(
+        "\n[4/5] Consolidação única..."
+    )
+
+    log(
+        "Consolidando COTAHIST..."
+    )
+
+    market = consolidate_cotahist(
+        state
+    )
+
+    log(
+        "  ✓ Registros COTAHIST:",
+        len(market),
+    )
+
+    log(
+        "Consolidando SPRE..."
+    )
+
+    spre = consolidate_spre(
+        state
+    )
+
+    log(
+        "  ✓ Registros SPRE:",
+        len(spre),
+    )
+
+    # ========================================================
+    # 5. AUDIT + PUBLICATION
+    # ========================================================
+
+    log(
+        "\n[5/5] Auditoria e publicação..."
+    )
+
+    audit = audit_market_history(
+        market,
+        spre,
+    )
+
+    publish_outputs(
+        market,
+        spre,
+    )
+
+    save_state(state)
+
+    manifest = build_manifest(
+        audit=audit,
+        cotahist_stats=cotahist_stats,
+        spre_stats=spre_stats,
+        failures=failures,
+    )
+
     write_json_atomic(
         manifest,
         MANIFEST_FILE,
+    )
+
+    write_build_status(
+        complete=True,
+        phase="COMPLETE",
+        total_spre=spre_stats["files"],
+        ready_spre=spre_stats["ready"],
+        pending_spre=0,
+        processed_now=spre_stats["processed"],
+        message=(
+            "Market history consolidado, "
+            "auditado e publicado."
+        ),
     )
 
     # ========================================================
@@ -2422,9 +2782,9 @@ def build_b3_market_history():
     )
 
     log(
-        "SPRE reaproveitados:",
+        "SPRE prontos:",
         spre_stats[
-            "unchanged"
+            "ready"
         ],
     )
 
@@ -2460,8 +2820,14 @@ def build_b3_market_history():
     )
 
     log(
-        "Cache particionado:",
+        "Cache particionado V6:",
         CACHE_ROOT,
+    )
+
+    log()
+
+    log(
+        "BUILD COMPLETE = true"
     )
 
     log(
@@ -2469,6 +2835,8 @@ def build_b3_market_history():
     )
 
     return {
+        "complete": True,
+
         "market_history":
             market,
 
@@ -2496,7 +2864,31 @@ def main():
 
     try:
 
-        build_b3_market_history()
+        result = build_b3_market_history()
+
+        if (
+            isinstance(result, dict)
+            and
+            not result.get(
+                "complete",
+                True,
+            )
+        ):
+
+            #
+            # IMPORTANTE:
+            #
+            # Retorna 0 propositalmente.
+            #
+            # O lote terminou corretamente.
+            # O workflow será responsável por:
+            #
+            # 1. salvar o cache V6;
+            # 2. verificar build_status.json;
+            # 3. interromper as etapas posteriores enquanto
+            #    complete == false.
+            #
+            return 0
 
         return 0
 
