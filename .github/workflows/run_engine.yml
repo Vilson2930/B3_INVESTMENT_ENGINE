@@ -9,12 +9,28 @@ on:
 permissions:
   contents: read
 
+# ============================================================
+# EVITA DUAS EXECUÇÕES DO ROBÔ AO MESMO TEMPO
+# ============================================================
+#
+# Uma execução nova fica aguardando a anterior terminar.
+# Não cancela uma execução que já esteja trabalhando.
+#
+# ============================================================
+
+concurrency:
+  group: b3-investment-engine
+  cancel-in-progress: false
+
+
 jobs:
 
   run-engine:
 
     name: B3 Investment Engine
+
     runs-on: ubuntu-latest
+
     timeout-minutes: 60
 
     steps:
@@ -52,7 +68,35 @@ jobs:
 
 
       # ======================================================
-      # 4. AMBIENTE
+      # 4. DATA DE EXECUÇÃO
+      # ======================================================
+      #
+      # O ano é calculado dinamicamente.
+      #
+      # Isso evita deixar "2026" fixo no cache COTAHIST.
+      #
+      # Em 2027, 2028, 2029 etc. o workflow continua
+      # funcionando sem alteração manual.
+      #
+      # ======================================================
+
+      - name: Runtime information
+        id: runtime
+        shell: bash
+        run: |
+          echo "year=$(date -u +%Y)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+          echo "=========================================="
+          echo "RUNTIME"
+          echo "=========================================="
+          echo "Ano UTC: $(date -u +%Y)"
+          echo "Data UTC: $(date -u +%Y-%m-%d)"
+          echo "=========================================="
+
+
+      # ======================================================
+      # 5. AMBIENTE
       # ======================================================
 
       - name: Environment information
@@ -60,15 +104,19 @@ jobs:
           echo "=========================================="
           echo "B3_INVESTMENT_ENGINE"
           echo "=========================================="
+
           python --version
           pip --version
+
+          echo ""
           echo "UTC:"
           date -u
+
           echo "=========================================="
 
 
       # ======================================================
-      # 5. CONFIGURAÇÃO
+      # 6. CONFIGURAÇÃO
       # ======================================================
 
       - name: Validate configuration
@@ -77,7 +125,11 @@ jobs:
 
 
       # ======================================================
-      # 6. MOTORES CONGELADOS
+      # 7. MOTORES CONGELADOS
+      # ======================================================
+      #
+      # NÃO altera metodologia.
+      #
       # ======================================================
 
       - name: Test Fundamental Engine
@@ -94,7 +146,7 @@ jobs:
 
 
       # ======================================================
-      # 7. RESTAURAR COTAHIST
+      # 8. RESTAURAR COTAHIST
       # ======================================================
 
       - name: Restore B3 COTAHIST cache
@@ -103,13 +155,15 @@ jobs:
         with:
           path: |
             data/live/b3/cotahist
-          key: b3-cotahist-${{ runner.os }}-2026
+
+          key: b3-cotahist-${{ runner.os }}-${{ steps.runtime.outputs.year }}
+
           restore-keys: |
             b3-cotahist-${{ runner.os }}-
 
 
       # ======================================================
-      # 8. RESTAURAR SPRE + CURSOR DO BOOTSTRAP
+      # 9. RESTAURAR SPRE + CURSOR
       # ======================================================
 
       - name: Restore B3 current-year SPRE cache
@@ -118,28 +172,43 @@ jobs:
         with:
           path: |
             data/live/b3/current_year
+
           key: b3-spre-v3-${{ runner.os }}-${{ github.run_id }}
+
           restore-keys: |
             b3-spre-v3-${{ runner.os }}-
 
 
       # ======================================================
-      # 9. RESTAURAR CACHE PROCESSADO V5
+      # 10. RESTAURAR MARKET HISTORY V6
+      # ======================================================
+      #
+      # Este é o novo cache particionado.
+      #
+      # Cada execução recupera:
+      #
+      # - state.json
+      # - build_status.json
+      # - partições COTAHIST
+      # - partições SPRE já processadas
+      #
       # ======================================================
 
-      - name: Restore B3 V5 processed cache
-        id: restore-v5
+      - name: Restore B3 V6 market-history cache
+        id: restore-v6
         uses: actions/cache/restore@v4
         with:
           path: |
-            data/live/b3/cache/market_history_v5
-          key: b3-v5-${{ runner.os }}-${{ github.run_id }}
+            data/live/b3/cache/market_history_v6
+
+          key: b3-market-v6-${{ runner.os }}-${{ github.run_id }}
+
           restore-keys: |
-            b3-v5-${{ runner.os }}-
+            b3-market-v6-${{ runner.os }}-
 
 
       # ======================================================
-      # 10. AUDITAR CACHE RESTAURADO
+      # 11. AUDITAR CACHES RESTAURADOS
       # ======================================================
 
       - name: Audit restored B3 caches
@@ -152,6 +221,7 @@ jobs:
           echo "COTAHIST:"
 
           if [ -d "data/live/b3/cotahist" ]; then
+
             COUNT=$(find data/live/b3/cotahist \
               -maxdepth 1 \
               -type f \
@@ -159,14 +229,19 @@ jobs:
               | wc -l)
 
             echo "Arquivos COTAHIST: $COUNT"
+
           else
+
             echo "Nenhum COTAHIST restaurado."
+
           fi
+
 
           echo ""
           echo "SPRE:"
 
           if [ -d "data/live/b3/current_year" ]; then
+
             COUNT=$(find data/live/b3/current_year \
               -maxdepth 1 \
               -type f \
@@ -176,31 +251,79 @@ jobs:
             echo "Arquivos SPRE: $COUNT"
 
             if [ -f "data/live/b3/current_year/.bootstrap_state.json" ]; then
+
               echo ""
               echo "Bootstrap state:"
               cat data/live/b3/current_year/.bootstrap_state.json
+
             else
+
               echo "Bootstrap state: AUSENTE"
+
             fi
+
           else
+
             echo "Nenhum SPRE restaurado."
+
           fi
 
+
           echo ""
-          echo "Cache hit COTAHIST:"
+          echo "MARKET HISTORY V6:"
+
+          if [ -d "data/live/b3/cache/market_history_v6" ]; then
+
+            echo "Cache V6 encontrado."
+
+            if [ -f "data/live/b3/cache/market_history_v6/state.json" ]; then
+
+              echo ""
+              echo "State V6:"
+              cat data/live/b3/cache/market_history_v6/state.json
+
+            else
+
+              echo "state.json: AUSENTE"
+
+            fi
+
+            if [ -f "data/live/b3/cache/market_history_v6/build_status.json" ]; then
+
+              echo ""
+              echo "Build status V6:"
+              cat data/live/b3/cache/market_history_v6/build_status.json
+
+            else
+
+              echo "build_status.json: AUSENTE"
+
+            fi
+
+          else
+
+            echo "Nenhum cache V6 restaurado."
+
+          fi
+
+
+          echo ""
+          echo "CACHE HIT COTAHIST:"
           echo "${{ steps.restore-cotahist.outputs.cache-hit }}"
 
-          echo "Cache hit SPRE:"
+          echo ""
+          echo "CACHE HIT SPRE:"
           echo "${{ steps.restore-spre.outputs.cache-hit }}"
 
-          echo "Cache hit V5:"
-          echo "${{ steps.restore-v5.outputs.cache-hit }}"
+          echo ""
+          echo "CACHE HIT MARKET V6:"
+          echo "${{ steps.restore-v6.outputs.cache-hit }}"
 
           echo "=========================================="
 
 
       # ======================================================
-      # 11. CVM LIVE
+      # 12. CVM LIVE
       # ======================================================
 
       - name: Update official CVM data
@@ -217,7 +340,7 @@ jobs:
 
 
       # ======================================================
-      # 12. AUDITAR CVM
+      # 13. AUDITAR CVM
       # ======================================================
 
       - name: Audit updated CVM data
@@ -227,13 +350,17 @@ jobs:
           echo "=========================================="
 
           if [ ! -f "data/live/cvm/cad_cia_aberta.csv" ]; then
+
             echo "ERRO: cadastro CVM não encontrado."
             exit 1
+
           fi
 
           if [ ! -f "data/live/cvm/cvm_manifest.json" ]; then
+
             echo "ERRO: manifesto CVM não encontrado."
             exit 1
+
           fi
 
           echo "Cadastro CVM: OK"
@@ -241,7 +368,7 @@ jobs:
 
 
       # ======================================================
-      # 13. HISTÓRICO B3
+      # 14. HISTÓRICO B3
       # ======================================================
 
       - name: Update official B3 historical data
@@ -258,20 +385,29 @@ jobs:
 
 
       # ======================================================
-      # 14. SALVAR COTAHIST
+      # 15. SALVAR COTAHIST
+      # ======================================================
+      #
+      # O ano agora é dinâmico.
+      #
       # ======================================================
 
       - name: Save B3 COTAHIST cache
-        if: success() && steps.restore-cotahist.outputs.cache-hit != 'true'
+        if: >
+          success() &&
+          steps.restore-cotahist.outputs.cache-hit != 'true'
+
         uses: actions/cache/save@v4
+
         with:
           path: |
             data/live/b3/cotahist
-          key: b3-cotahist-${{ runner.os }}-2026
+
+          key: b3-cotahist-${{ runner.os }}-${{ steps.runtime.outputs.year }}
 
 
       # ======================================================
-      # 15. B3 ANO CORRENTE — LOTE 1
+      # 16. B3 ANO CORRENTE — LOTE 1
       # ======================================================
 
       - name: Update current-year B3 batch 1
@@ -284,7 +420,7 @@ jobs:
 
 
       # ======================================================
-      # 16. VERIFICAR BOOTSTRAP APÓS LOTE 1
+      # 17. VERIFICAR BOOTSTRAP — LOTE 1
       # ======================================================
 
       - name: Check B3 bootstrap batch 1
@@ -299,86 +435,10 @@ jobs:
               ".bootstrap_state.json"
           )
 
-          if not p.exists():
-              print("complete=false")
-
-              with open(
-                  "/tmp/b3_batch1.txt",
-                  "w",
-                  encoding="utf-8",
-              ) as f:
-                  f.write("false")
-
-              raise SystemExit(0)
-
-          data = json.loads(
-              p.read_text(
-                  encoding="utf-8"
-              )
-          )
-
-          complete = bool(
-              data.get(
-                  "complete",
-                  False,
-              )
-          )
-
-          print(
-              "Bootstrap completo:",
-              complete,
-          )
-
-          with open(
-              "/tmp/b3_batch1.txt",
-              "w",
-              encoding="utf-8",
-          ) as f:
-              f.write(
-                  "true"
-                  if complete
-                  else "false"
-              )
-          PY
-
-          COMPLETE=$(cat /tmp/b3_batch1.txt)
-          echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
-
-
-      # ======================================================
-      # 17. B3 ANO CORRENTE — LOTE 2
-      # ======================================================
-
-      - name: Update current-year B3 batch 2
-        if: steps.batch1.outputs.complete != 'true'
-        run: |
-          echo "=========================================="
-          echo "B3 ANO CORRENTE — LOTE 2"
-          echo "=========================================="
-
-          python -u update_b3_current_year.py
-
-
-      # ======================================================
-      # 18. VERIFICAR BOOTSTRAP APÓS LOTE 2
-      # ======================================================
-
-      - name: Check B3 bootstrap batch 2
-        id: batch2
-        if: steps.batch1.outputs.complete != 'true'
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          p = Path(
-              "data/live/b3/current_year/"
-              ".bootstrap_state.json"
-          )
-
           complete = False
 
           if p.exists():
+
               data = json.loads(
                   p.read_text(
                       encoding="utf-8"
@@ -397,30 +457,98 @@ jobs:
               complete,
           )
 
-          with open(
-              "/tmp/b3_batch2.txt",
-              "w",
+          Path(
+              "/tmp/b3_batch1.txt"
+          ).write_text(
+              "true"
+              if complete
+              else "false",
               encoding="utf-8",
-          ) as f:
-              f.write(
-                  "true"
-                  if complete
-                  else "false"
-              )
+          )
           PY
 
-          COMPLETE=$(cat /tmp/b3_batch2.txt)
+          COMPLETE=$(cat /tmp/b3_batch1.txt)
+
           echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
 
 
       # ======================================================
-      # 19. B3 ANO CORRENTE — LOTE 3
+      # 18. B3 ANO CORRENTE — LOTE 2
+      # ======================================================
+
+      - name: Update current-year B3 batch 2
+        if: steps.batch1.outputs.complete != 'true'
+        run: |
+          echo "=========================================="
+          echo "B3 ANO CORRENTE — LOTE 2"
+          echo "=========================================="
+
+          python -u update_b3_current_year.py
+
+
+      # ======================================================
+      # 19. VERIFICAR BOOTSTRAP — LOTE 2
+      # ======================================================
+
+      - name: Check B3 bootstrap batch 2
+        id: batch2
+        if: steps.batch1.outputs.complete != 'true'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path(
+              "data/live/b3/current_year/"
+              ".bootstrap_state.json"
+          )
+
+          complete = False
+
+          if p.exists():
+
+              data = json.loads(
+                  p.read_text(
+                      encoding="utf-8"
+                  )
+              )
+
+              complete = bool(
+                  data.get(
+                      "complete",
+                      False,
+                  )
+              )
+
+          print(
+              "Bootstrap completo:",
+              complete,
+          )
+
+          Path(
+              "/tmp/b3_batch2.txt"
+          ).write_text(
+              "true"
+              if complete
+              else "false",
+              encoding="utf-8",
+          )
+          PY
+
+          COMPLETE=$(cat /tmp/b3_batch2.txt)
+
+          echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
+
+
+      # ======================================================
+      # 20. B3 ANO CORRENTE — LOTE 3
       # ======================================================
 
       - name: Update current-year B3 batch 3
         if: >
           steps.batch1.outputs.complete != 'true' &&
           steps.batch2.outputs.complete != 'true'
+
         run: |
           echo "=========================================="
           echo "B3 ANO CORRENTE — LOTE 3"
@@ -430,7 +558,7 @@ jobs:
 
 
       # ======================================================
-      # 20. VERIFICAR BOOTSTRAP APÓS LOTE 3
+      # 21. VERIFICAR BOOTSTRAP FINAL
       # ======================================================
 
       - name: Check B3 bootstrap final status
@@ -449,6 +577,7 @@ jobs:
           last_checked = None
 
           if p.exists():
+
               data = json.loads(
                   p.read_text(
                       encoding="utf-8"
@@ -476,16 +605,14 @@ jobs:
               last_checked,
           )
 
-          with open(
-              "/tmp/b3_bootstrap.txt",
-              "w",
+          Path(
+              "/tmp/b3_bootstrap.txt"
+          ).write_text(
+              "true"
+              if complete
+              else "false",
               encoding="utf-8",
-          ) as f:
-              f.write(
-                  "true"
-                  if complete
-                  else "false"
-              )
+          )
           PY
 
           COMPLETE=$(cat /tmp/b3_bootstrap.txt)
@@ -497,27 +624,27 @@ jobs:
 
 
       # ======================================================
-      # 21. SALVAR SPRE + CURSOR
+      # 22. SALVAR SPRE + CURSOR
       # ======================================================
       #
-      # IMPORTANTE:
-      # salva mesmo quando bootstrap ainda não terminou.
+      # SEMPRE salva após os lotes.
       #
-      # Assim a próxima execução continua de onde parou.
       # ======================================================
 
       - name: Save B3 current-year SPRE cache
         if: success()
+
         uses: actions/cache/save@v4
+
         with:
           path: |
             data/live/b3/current_year
+
           key: b3-spre-v3-${{ runner.os }}-${{ github.run_id }}
 
 
       # ======================================================
-      # 22. ENCERRAR NORMALMENTE SE BOOTSTRAP AINDA ESTIVER
-      #     EM ANDAMENTO
+      # 23. INFORMAÇÃO DO BOOTSTRAP
       # ======================================================
 
       - name: Bootstrap progress information
@@ -529,44 +656,269 @@ jobs:
 
           echo ""
           echo "Os lotes desta execução foram concluídos."
-          echo "SPRE e cursor foram salvos no cache."
+          echo "SPRE e cursor foram salvos."
           echo ""
           echo "A próxima execução continuará do ponto salvo."
           echo ""
-          echo "O build NÃO será executado enquanto o"
-          echo "bootstrap não estiver completo."
+          echo "Market History V6 não será iniciado"
+          echo "enquanto o bootstrap SPRE não terminar."
+          echo ""
           echo "=========================================="
 
 
       # ======================================================
-      # 23. BUILD MARKET HISTORY V5
+      # 24. BUILD MARKET HISTORY V6 — UM LOTE
+      # ======================================================
+      #
+      # O V6 NÃO tenta mais processar todos os SPRE
+      # obrigatoriamente na mesma execução.
+      #
+      # Default:
+      #
+      # 25 SPRE por execução.
+      #
+      # Quando ainda houver SPRE pendentes:
+      #
+      # BUILD COMPLETE = false
+      #
+      # e o programa termina normalmente.
+      #
       # ======================================================
 
-      - name: Build B3 market history LIVE
+      - name: Build B3 market history LIVE V6
+        id: market-build
         if: steps.bootstrap.outputs.complete == 'true'
+
+        env:
+          B3_MARKET_HISTORY_SPRE_BATCH_SIZE: "25"
+
         run: |
           echo "=========================================="
-          echo "BUILD B3 MARKET HISTORY LIVE — V5"
+          echo "BUILD B3 MARKET HISTORY LIVE — V6"
           echo "=========================================="
 
           python -u build_b3_market_history.py
 
+          STATUS_FILE="data/live/b3/cache/market_history_v6/build_status.json"
+
+          if [ ! -f "$STATUS_FILE" ]; then
+
+            echo "ERRO:"
+            echo "build_status.json V6 não foi criado."
+
+            exit 1
+
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path(
+              "data/live/b3/cache/"
+              "market_history_v6/"
+              "build_status.json"
+          )
+
+          data = json.loads(
+              path.read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          complete = bool(
+              data.get(
+                  "complete",
+                  False,
+              )
+          )
+
+          phase = data.get(
+              "phase"
+          )
+
+          total = int(
+              data.get(
+                  "spre_total",
+                  0,
+              )
+          )
+
+          ready = int(
+              data.get(
+                  "spre_ready",
+                  0,
+              )
+          )
+
+          pending = int(
+              data.get(
+                  "spre_pending",
+                  0,
+              )
+          )
+
+          processed = int(
+              data.get(
+                  "spre_processed_now",
+                  0,
+              )
+          )
+
+          print()
+          print(
+              "=========================================="
+          )
+
+          print(
+              "STATUS MARKET HISTORY V6"
+          )
+
+          print(
+              "=========================================="
+          )
+
+          print(
+              "Phase:",
+              phase,
+          )
+
+          print(
+              "SPRE total:",
+              total,
+          )
+
+          print(
+              "SPRE prontos:",
+              ready,
+          )
+
+          print(
+              "SPRE pendentes:",
+              pending,
+          )
+
+          print(
+              "Processados nesta execução:",
+              processed,
+          )
+
+          print(
+              "BUILD COMPLETE =",
+              complete,
+          )
+
+          print(
+              "=========================================="
+          )
+
+          Path(
+              "/tmp/b3_market_v6_complete.txt"
+          ).write_text(
+              "true"
+              if complete
+              else "false",
+              encoding="utf-8",
+          )
+          PY
+
+          COMPLETE=$(cat /tmp/b3_market_v6_complete.txt)
+
+          echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
+
+
+      # ======================================================
+      # 25. SALVAR CACHE MARKET HISTORY V6
+      # ======================================================
+      #
+      # ESTE É O PONTO CRÍTICO DA CORREÇÃO.
+      #
+      # O cache é salvo DEPOIS DE CADA LOTE V6,
+      # mesmo que o Market History ainda não esteja completo.
+      #
+      # Assim as 25 partições processadas não são perdidas.
+      #
+      # ======================================================
+
+      - name: Save B3 V6 market-history cache
+        if: >
+          success() &&
+          steps.bootstrap.outputs.complete == 'true'
+
+        uses: actions/cache/save@v4
+
+        with:
+          path: |
+            data/live/b3/cache/market_history_v6
+
+          key: b3-market-v6-${{ runner.os }}-${{ github.run_id }}
+
+
+      # ======================================================
+      # 26. MARKET HISTORY V6 AINDA EM CONSTRUÇÃO
+      # ======================================================
+
+      - name: Market History V6 progress information
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete != 'true'
+
+        run: |
+          echo "=========================================="
+          echo "MARKET HISTORY V6 — LOTE CONCLUÍDO"
+          echo "=========================================="
+
+          echo ""
+          echo "As partições processadas foram salvas."
+          echo ""
+          echo "A próxima execução restaurará o cache V6"
+          echo "e continuará somente os SPRE pendentes."
+          echo ""
+          echo "Fundamentos e motor NÃO serão executados"
+          echo "até BUILD COMPLETE = true."
+          echo ""
+          echo "=========================================="
+
+
+      # ======================================================
+      # 27. VALIDAR MARKET HISTORY FINAL
+      # ======================================================
+
+      - name: Validate completed B3 market history
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
+        run: |
+          echo "=========================================="
+          echo "VALIDAÇÃO MARKET HISTORY FINAL"
+          echo "=========================================="
+
           if [ ! -f "data/live/b3/market_history_live.csv" ]; then
+
             echo "ERRO:"
             echo "market_history_live.csv não foi criado."
+
             exit 1
+
           fi
 
           if [ ! -f "data/live/b3/spre_prices_live.csv" ]; then
+
             echo "ERRO:"
             echo "spre_prices_live.csv não foi criado."
+
             exit 1
+
           fi
 
           if [ ! -f "data/live/b3/market_history_manifest.json" ]; then
+
             echo "ERRO:"
             echo "market_history_manifest.json não foi criado."
+
             exit 1
+
           fi
 
           echo ""
@@ -574,28 +926,19 @@ jobs:
           echo "spre_prices_live.csv: OK"
           echo "market_history_manifest.json: OK"
 
-
-      # ======================================================
-      # 24. SALVAR CACHE V5
-      # ======================================================
-
-      - name: Save B3 V5 processed cache
-        if: >
-          success() &&
-          steps.bootstrap.outputs.complete == 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            data/live/b3/cache/market_history_v5
-          key: b3-v5-${{ runner.os }}-${{ github.run_id }}
+          echo ""
+          echo "MARKET HISTORY V6: COMPLETO"
 
 
       # ======================================================
-      # 25. FUNDAMENTAL LIVE
+      # 28. FUNDAMENTAL LIVE
       # ======================================================
 
       - name: Build LIVE fundamental input
-        if: steps.bootstrap.outputs.complete == 'true'
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
         run: |
           echo "=========================================="
           echo "BUILD FUNDAMENTAL INPUT LIVE"
@@ -609,17 +952,23 @@ jobs:
 
 
       # ======================================================
-      # 26. AUDITAR FUNDAMENTAL
+      # 29. AUDITAR FUNDAMENTAL LIVE
       # ======================================================
 
       - name: Audit LIVE fundamental input
-        if: steps.bootstrap.outputs.complete == 'true'
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
         run: |
           FILE="data/live/fundamental/fundamental_input_live.csv"
 
           if [ ! -f "$FILE" ]; then
+
             echo "ERRO: fundamental_input_live.csv não encontrado."
+
             exit 1
+
           fi
 
           python - <<'PY'
@@ -657,11 +1006,13 @@ jobs:
           ]
 
           if missing:
+
               raise SystemExit(
                   f"ERRO: colunas ausentes: {missing}"
               )
 
           if df.empty:
+
               raise SystemExit(
                   "ERRO: fundamental LIVE vazio."
               )
@@ -674,6 +1025,7 @@ jobs:
           )
 
           if tickers.duplicated().any():
+
               raise SystemExit(
                   "ERRO: tickers duplicados."
               )
@@ -695,22 +1047,32 @@ jobs:
 
 
       # ======================================================
-      # 27. BASE TÉCNICA ATUAL
+      # 30. BASE TÉCNICA ATUAL
       # ======================================================
       #
       # TRANSITÓRIO.
-      # Técnico LIVE ainda será substituído posteriormente.
+      #
+      # Técnico LIVE será tratado na etapa própria.
+      #
+      # Nenhuma metodologia técnica é alterada aqui.
+      #
       # ======================================================
 
       - name: Validate current technical input
-        if: steps.bootstrap.outputs.complete == 'true'
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
         run: |
           FILE="data/technical_prices.csv"
 
           if [ ! -f "$FILE" ]; then
+
             echo "ERRO:"
             echo "$FILE não encontrado."
+
             exit 1
+
           fi
 
           python - <<'PY'
@@ -756,11 +1118,13 @@ jobs:
           ]
 
           if missing:
+
               raise SystemExit(
                   f"ERRO: colunas técnicas ausentes: {missing}"
               )
 
           if df.empty:
+
               raise SystemExit(
                   "ERRO: technical_prices.csv vazio."
               )
@@ -786,11 +1150,14 @@ jobs:
 
 
       # ======================================================
-      # 28. EXECUTAR MOTOR
+      # 31. EXECUTAR MOTOR
       # ======================================================
 
       - name: Run B3 Investment Engine
-        if: steps.bootstrap.outputs.complete == 'true'
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
         run: |
           echo "=========================================="
           echo "EXECUTANDO B3 INVESTMENT ENGINE"
@@ -800,42 +1167,156 @@ jobs:
 
 
       # ======================================================
-      # 29. VALIDAR RESULTADO
+      # 32. VALIDAR RESULTADO
       # ======================================================
 
       - name: Validate engine results
-        if: steps.bootstrap.outputs.complete == 'true'
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
         run: |
           if [ ! -f "final_report/b3_investment_engine_results.csv" ]; then
+
             echo "ERRO: resultado completo não encontrado."
+
             exit 1
+
           fi
 
           if [ ! -f "final_report/b3_investment_engine_eligible.csv" ]; then
+
             echo "ERRO: elegíveis não encontrados."
+
             exit 1
+
           fi
 
           if [ ! -f "final_report/run_summary.json" ]; then
+
             echo "ERRO: run_summary.json não encontrado."
+
             exit 1
+
           fi
 
           echo "Resultado do motor: OK"
 
 
       # ======================================================
-      # 30. RELATÓRIO FINAL
+      # 33. RELATÓRIO FINAL
       # ======================================================
 
       - name: Generate final report
-        if: steps.bootstrap.outputs.complete == 'true'
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
         run: |
           python report_generator.py
 
 
       # ======================================================
-      # 31. ARQUIVOS GERADOS
+      # 34. MOSTRAR RESULTADO NO LOG
+      # ======================================================
+      #
+      # Facilita visualizar as ações selecionadas sem
+      # precisar abrir imediatamente o artifact.
+      #
+      # ======================================================
+
+      - name: Show selected stocks
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          path = Path(
+              "final_report/"
+              "b3_investment_engine_eligible.csv"
+          )
+
+          if not path.exists():
+
+              raise SystemExit(
+                  "Arquivo de elegíveis não encontrado."
+              )
+
+          df = pd.read_csv(
+              path,
+              low_memory=False,
+          )
+
+          df.columns = [
+              str(c).strip().upper()
+              for c in df.columns
+          ]
+
+          print()
+          print(
+              "=" * 72
+          )
+
+          print(
+              "AÇÕES SELECIONADAS — "
+              "B3 INVESTMENT ENGINE"
+          )
+
+          print(
+              "=" * 72
+          )
+
+          preferred = [
+              "TICKER",
+              "QUALITY_SCORE",
+              "VALUATION_SCORE",
+              "FUNDAMENTAL_SCORE",
+              "HISTORY_YEARS",
+              "AVG_DAILY_LIQUIDITY_BRL",
+          ]
+
+          columns = [
+              c
+              for c in preferred
+              if c in df.columns
+          ]
+
+          if "FUNDAMENTAL_SCORE" in df.columns:
+
+              df = df.sort_values(
+                  "FUNDAMENTAL_SCORE",
+                  ascending=False,
+              )
+
+          if columns:
+
+              print(
+                  df[columns]
+                  .to_string(
+                      index=False
+                  )
+              )
+
+          else:
+
+              print(
+                  df.to_string(
+                      index=False
+                  )
+              )
+
+          print(
+              "=" * 72
+          )
+          PY
+
+
+      # ======================================================
+      # 35. ARQUIVOS GERADOS
       # ======================================================
 
       - name: Show generated files
@@ -846,94 +1327,138 @@ jobs:
           echo "=========================================="
 
           if [ -d "data/live/b3/current_year" ]; then
+
             echo ""
             echo "SPRE:"
+
             find data/live/b3/current_year \
               -maxdepth 1 \
               -type f \
               -print \
               | sort \
               | tail -20
+
           fi
+
 
           if [ -f "data/live/b3/current_year/.bootstrap_state.json" ]; then
+
             echo ""
             echo "BOOTSTRAP STATE:"
+
             cat data/live/b3/current_year/.bootstrap_state.json
+
           fi
 
+
+          if [ -f "data/live/b3/cache/market_history_v6/build_status.json" ]; then
+
+            echo ""
+            echo "MARKET HISTORY V6 STATUS:"
+
+            cat data/live/b3/cache/market_history_v6/build_status.json
+
+          fi
+
+
           if [ -d "final_report" ]; then
+
             echo ""
             echo "FINAL REPORT:"
+
             find final_report \
               -maxdepth 2 \
               -type f \
               -print \
               | sort
+
           fi
 
 
       # ======================================================
-      # 32. UPLOAD RELATÓRIO
+      # 36. UPLOAD RELATÓRIO FINAL
       # ======================================================
 
       - name: Upload final report
         if: >
           success() &&
-          steps.bootstrap.outputs.complete == 'true'
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
         uses: actions/upload-artifact@v4
+
         with:
           name: B3_INVESTMENT_ENGINE_REPORT
+
           path: |
             final_report/
+
           if-no-files-found: error
+
           retention-days: 30
 
 
       # ======================================================
-      # 33. UPLOAD MANIFESTOS
+      # 37. UPLOAD MANIFESTOS
       # ======================================================
 
       - name: Upload LIVE manifests
         if: always()
+
         uses: actions/upload-artifact@v4
+
         with:
           name: B3_INVESTMENT_ENGINE_LIVE_MANIFESTS
+
           path: |
             data/live/cvm/cvm_manifest.json
             data/live/b3/*.json
             data/live/b3/current_year/.bootstrap_state.json
+            data/live/b3/cache/market_history_v6/build_status.json
+
           if-no-files-found: warn
+
           retention-days: 30
 
 
       # ======================================================
-      # 34. CHECKPOINTS
+      # 38. CHECKPOINTS
       # ======================================================
 
       - name: Upload checkpoints
         if: >
           success() &&
-          steps.bootstrap.outputs.complete == 'true'
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
         uses: actions/upload-artifact@v4
+
         with:
           name: B3_INVESTMENT_ENGINE_CHECKPOINTS
+
           path: |
             checkpoints/
+
           if-no-files-found: warn
+
           retention-days: 30
 
 
       # ======================================================
-      # 35. LOGS EM FALHA
+      # 39. LOGS EM FALHA
       # ======================================================
 
       - name: Upload logs on failure
         if: failure()
+
         uses: actions/upload-artifact@v4
+
         with:
           name: B3_INVESTMENT_ENGINE_FAILURE_LOGS
+
           path: |
             logs/
+
           if-no-files-found: ignore
+
           retention-days: 30
