@@ -746,18 +746,25 @@ def derive_family(
         .str.upper()
     )
 
-    financial = motor.isin(
-        {
-            "FINANCEIRO_BANCO",
-            "FINANCEIRO_SEGUROS",
-            "FINANCEIRO_ESPECIAL",
-        }
+    # Mapeamento congelado do estudo.
+    motor_to_family = {
+        "COMMODITY": "COMMODITY",
+        "OPERACIONAL": "OPERACIONAL",
+        "UTILITY": "UTILITY",
+        "FINANCEIRO_BANCO": "FINANCEIRO",
+        "FINANCEIRO_SEGUROS": "FINANCEIRO",
+        "FINANCEIRO_ESPECIAL": "FINANCEIRO",
+    }
+
+    family_from_motor = motor.map(
+        motor_to_family
     )
 
-    family = family.mask(
-        family.isna()
-        & financial,
-        "FINANCEIRO",
+    # MOTOR_FINAL é prioritário quando possui mapeamento
+    # conhecido. Caso contrário, preserva uma família válida
+    # já existente.
+    family = family_from_motor.combine_first(
+        family
     )
 
     valid = {
