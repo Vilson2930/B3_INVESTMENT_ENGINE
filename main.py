@@ -8,7 +8,7 @@
 #
 # Fundamental Engine LIVE
 #        ↓
-# Technical Timing Engine — Cell06B congelado
+# Technical Timing Engine — dados LIVE / metodologia congelada
 #        ↓
 # Integration Engine
 #        ↓
@@ -20,7 +20,8 @@
 # IMPORTANTE:
 #
 # - Fundamentos: LIVE
-# - Técnico: Cell06B congelado
+# - Técnico: LIVE
+# - Metodologia técnica: Cell06B congelada
 # - Técnico NÃO altera ranking
 # - Técnico NÃO cria score
 # - Técnico NÃO cria gatilho obrigatório
@@ -66,8 +67,10 @@ from integration_engine import (
 # produzido por build_live_fundamental_input.py
 #
 # TÉCNICO:
-# produzido pelo build_technical_prices.py atual,
-# preservando exatamente o checkpoint Cell06B congelado.
+# produzido por build_technical_prices.py
+#
+# Os dados técnicos são LIVE.
+# A metodologia técnica permanece congelada conforme Cell06B.
 # ============================================================
 
 LIVE_DATA_DIR = (
@@ -80,14 +83,24 @@ LIVE_FUNDAMENTAL_DIR = (
     / "fundamental"
 )
 
+LIVE_TECHNICAL_DIR = (
+    LIVE_DATA_DIR
+    / "technical"
+)
+
 FUNDAMENTAL_INPUT_FILE = (
     LIVE_FUNDAMENTAL_DIR
     / "fundamental_input_live.csv"
 )
 
 TECHNICAL_PRICES_FILE = (
-    DATA_DIR
-    / "technical_prices.csv"
+    LIVE_TECHNICAL_DIR
+    / "technical_prices_live.csv"
+)
+
+TECHNICAL_MANIFEST_FILE = (
+    LIVE_TECHNICAL_DIR
+    / "technical_prices_live_manifest.json"
 )
 
 
@@ -133,7 +146,7 @@ FUNDAMENTAL_REQUIRED_COLUMNS = [
 # 4. COLUNAS TÉCNICAS
 # ============================================================
 #
-# Base técnica congelada derivada do Cell06B.
+# Base técnica LIVE construída pela metodologia congelada.
 #
 # Os 7 indicadores já chegam calculados.
 #
@@ -306,18 +319,17 @@ def load_fundamental_input() -> pd.DataFrame:
 
 
 # ============================================================
-# 7. CARREGAR BASE TÉCNICA
+# 7. CARREGAR BASE TÉCNICA LIVE
 # ============================================================
 #
-# IMPORTANTE:
-#
-# A etapa técnica ainda utiliza o checkpoint Cell06B congelado.
+# A base é reconstruída por build_technical_prices.py.
 #
 # Esta função:
 #
 # - NÃO recalcula indicadores;
 # - NÃO altera segmentação;
-# - NÃO preenche indicadores ausentes.
+# - NÃO preenche indicadores ausentes;
+# - apenas consome o resultado técnico LIVE.
 # ============================================================
 
 def load_technical_prices() -> pd.DataFrame:
@@ -325,19 +337,65 @@ def load_technical_prices() -> pd.DataFrame:
     if not TECHNICAL_PRICES_FILE.exists():
 
         raise FileNotFoundError(
-            "\nArquivo técnico não encontrado:\n\n"
+            "\nArquivo técnico LIVE não encontrado:\n\n"
             f"{TECHNICAL_PRICES_FILE}\n\n"
             "Execute primeiro:\n"
             "build_technical_prices.py"
         )
 
+    if not TECHNICAL_MANIFEST_FILE.exists():
+
+        raise FileNotFoundError(
+            "\nManifesto técnico LIVE não encontrado:\n\n"
+            f"{TECHNICAL_MANIFEST_FILE}\n\n"
+            "Execute primeiro:\n"
+            "build_technical_prices.py"
+        )
+
+    with open(
+        TECHNICAL_MANIFEST_FILE,
+        "r",
+        encoding="utf-8",
+    ) as file:
+
+        manifest = json.load(file)
+
+    if manifest.get("data_mode") != "LIVE":
+
+        raise RuntimeError(
+            "Manifesto técnico inválido: "
+            "data_mode deve ser LIVE."
+        )
+
+    if manifest.get("methodology_mode") != "FROZEN":
+
+        raise RuntimeError(
+            "Manifesto técnico inválido: "
+            "methodology_mode deve ser FROZEN."
+        )
+
+    if manifest.get("technical_score_created") is not False:
+
+        raise RuntimeError(
+            "Violação metodológica: "
+            "Technical Score criado na base técnica."
+        )
+
+    if manifest.get("ranking_modified") is not False:
+
+        raise RuntimeError(
+            "Violação metodológica: "
+            "ranking fundamental alterado "
+            "pela camada técnica."
+        )
+
     print("\n" + "=" * 80)
-    print("CARREGANDO CONTEXTO TÉCNICO")
+    print("CARREGANDO CONTEXTO TÉCNICO LIVE")
     print("=" * 80)
 
     print(
         "Fonte técnica:",
-        "CELL06B_FROZEN",
+        "LIVE — CELL06B_FROZEN_METHODOLOGY",
     )
 
     print(
@@ -361,8 +419,29 @@ def load_technical_prices() -> pd.DataFrame:
     validate_columns(
         df,
         TECHNICAL_REQUIRED_COLUMNS,
-        "technical_prices.csv",
+        "technical_prices_live.csv",
     )
+
+    forbidden_columns = [
+        "TECHNICAL_SCORE",
+        "BUY_SIGNAL",
+        "SELL_SIGNAL",
+        "MANDATORY_TRIGGER",
+        "VALIDATED_OOS_TRIGGER",
+    ]
+
+    violations = [
+        column
+        for column in forbidden_columns
+        if column in df.columns
+    ]
+
+    if violations:
+
+        raise RuntimeError(
+            "Violação metodológica na base técnica LIVE: "
+            f"{violations}"
+        )
 
     df["TICKER"] = (
         df["TICKER"]
@@ -419,6 +498,17 @@ def load_technical_prices() -> pd.DataFrame:
         )
     )
 
+    if df.empty:
+
+        raise RuntimeError(
+            "Base técnica LIVE está vazia."
+        )
+
+    latest_date = (
+        df["DATE"]
+        .max()
+    )
+
     print(
         "Registros técnicos:",
         len(df),
@@ -427,6 +517,21 @@ def load_technical_prices() -> pd.DataFrame:
     print(
         "Tickers técnicos:",
         df["TICKER"].nunique(),
+    )
+
+    print(
+        "Último pregão técnico:",
+        latest_date.date(),
+    )
+
+    print(
+        "Dados técnicos:",
+        "LIVE",
+    )
+
+    print(
+        "Metodologia técnica:",
+        "CELL06B CONGELADA",
     )
 
     return df
@@ -544,7 +649,8 @@ def process_company(
     #
     # O motor técnico:
     #
-    # - não recalcula indicadores;
+    # - recebe indicadores recalculados pelo builder LIVE;
+    # - não recalcula indicadores dentro do main;
     # - não cria score;
     # - não cria gatilho obrigatório;
     # - não veta fundamento aprovado;
@@ -910,6 +1016,11 @@ def run_engine():
         .sum()
     )
 
+    technical_latest_date = (
+        prices_df["DATE"]
+        .max()
+    )
+
     summary = {
 
         "project":
@@ -932,11 +1043,30 @@ def run_engine():
             ),
 
         "technical_data_mode":
+            "LIVE",
+
+        "technical_methodology_mode":
             "CELL06B_FROZEN",
 
         "technical_input_file":
             str(
                 TECHNICAL_PRICES_FILE
+            ),
+
+        "technical_manifest_file":
+            str(
+                TECHNICAL_MANIFEST_FILE
+            ),
+
+        "technical_latest_date":
+            (
+                technical_latest_date
+                .date()
+                .isoformat()
+                if pd.notna(
+                    technical_latest_date
+                )
+                else None
             ),
 
         "companies_received":
@@ -995,10 +1125,13 @@ def run_engine():
             False,
 
         "technical_indicator_source":
-            "CELL06B_FROZEN",
+            "LIVE_B3_CELL06B_FROZEN_METHODOLOGY",
 
         "technical_indicators_recalculated":
-            False,
+            True,
+
+        "technical_indicators_recalculated_by":
+            "build_technical_prices.py",
 
         "architecture":
             "FUNDAMENTAL_FIRST_TECHNICAL_CONTEXT",
@@ -1056,7 +1189,12 @@ def run_engine():
 
     print(
         "Técnico:",
-        "CELL06B CONGELADO",
+        "LIVE — METODOLOGIA CELL06B CONGELADA",
+    )
+
+    print(
+        "Último pregão técnico:",
+        technical_latest_date.date()
     )
 
     print(
@@ -1092,7 +1230,11 @@ def run_engine():
     )
 
     print(
-        "\nIndicadores recalculados: NÃO"
+        "\nIndicadores recalculados pelo builder LIVE: SIM"
+    )
+
+    print(
+        "Indicadores recalculados pelo main.py: NÃO"
     )
 
     print(
@@ -1160,11 +1302,15 @@ def run_engine():
     )
 
     print(
-        "✓ Technical Timing Engine executado."
+        "✓ Technical Timing Engine LIVE executado."
     )
 
     print(
-        "✓ Indicadores técnicos Cell06B preservados."
+        "✓ Dados técnicos LIVE."
+    )
+
+    print(
+        "✓ Metodologia técnica Cell06B preservada."
     )
 
     print(
