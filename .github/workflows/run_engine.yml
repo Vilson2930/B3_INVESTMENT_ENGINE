@@ -180,7 +180,7 @@ jobs:
 
 
       # ======================================================
-      # 9. RESTAURAR SPRE + CURSOR
+      # 10. RESTAURAR SPRE + CURSOR
       # ======================================================
 
       - name: Restore B3 current-year SPRE cache
@@ -197,18 +197,7 @@ jobs:
 
 
       # ======================================================
-      # 10. RESTAURAR MARKET HISTORY V6
-      # ======================================================
-      #
-      # Este é o novo cache particionado.
-      #
-      # Cada execução recupera:
-      #
-      # - state.json
-      # - build_status.json
-      # - partições COTAHIST
-      # - partições SPRE já processadas
-      #
+      # 11. RESTAURAR MARKET HISTORY V6
       # ======================================================
 
       - name: Restore B3 V6 market-history cache
@@ -225,7 +214,7 @@ jobs:
 
 
       # ======================================================
-      # 11. AUDITAR CACHES RESTAURADOS
+      # 12. AUDITAR CACHES RESTAURADOS
       # ======================================================
 
       - name: Audit restored B3 caches
@@ -252,7 +241,6 @@ jobs:
             echo "Nenhum COTAHIST restaurado."
 
           fi
-
 
           echo ""
           echo "SPRE:"
@@ -284,7 +272,6 @@ jobs:
             echo "Nenhum SPRE restaurado."
 
           fi
-
 
           echo ""
           echo "MARKET HISTORY V6:"
@@ -323,7 +310,6 @@ jobs:
 
           fi
 
-
           echo ""
           echo "CACHE HIT COTAHIST:"
           echo "${{ steps.restore-cotahist.outputs.cache-hit }}"
@@ -340,7 +326,7 @@ jobs:
 
 
       # ======================================================
-      # 12. CVM LIVE
+      # 13. CVM LIVE
       # ======================================================
 
       - name: Update official CVM data
@@ -357,7 +343,7 @@ jobs:
 
 
       # ======================================================
-      # 13. AUDITAR CVM
+      # 14. AUDITAR CVM
       # ======================================================
 
       - name: Audit updated CVM data
@@ -367,17 +353,13 @@ jobs:
           echo "=========================================="
 
           if [ ! -f "data/live/cvm/cad_cia_aberta.csv" ]; then
-
             echo "ERRO: cadastro CVM não encontrado."
             exit 1
-
           fi
 
           if [ ! -f "data/live/cvm/cvm_manifest.json" ]; then
-
             echo "ERRO: manifesto CVM não encontrado."
             exit 1
-
           fi
 
           echo "Cadastro CVM: OK"
@@ -385,13 +367,7 @@ jobs:
 
 
       # ======================================================
-      # 14. SALVAR CACHE CVM
-      # ======================================================
-      #
-      # Salva cadastro, DFP, ITR, FCA e manifesto.
-      # A chave é única por execução; na próxima execução
-      # o restore-keys recupera o snapshot mais recente.
-      #
+      # 15. SALVAR CACHE CVM
       # ======================================================
 
       - name: Save CVM LIVE cache
@@ -405,7 +381,7 @@ jobs:
 
 
       # ======================================================
-      # 15. HISTÓRICO B3
+      # 16. HISTÓRICO B3
       # ======================================================
 
       - name: Update official B3 historical data
@@ -422,11 +398,7 @@ jobs:
 
 
       # ======================================================
-      # 15. SALVAR COTAHIST
-      # ======================================================
-      #
-      # O ano agora é dinâmico.
-      #
+      # 17. SALVAR COTAHIST
       # ======================================================
 
       - name: Save B3 COTAHIST cache
@@ -444,7 +416,7 @@ jobs:
 
 
       # ======================================================
-      # 16. B3 ANO CORRENTE — LOTE 1
+      # 18. B3 ANO CORRENTE — LOTE 1
       # ======================================================
 
       - name: Update current-year B3 batch 1
@@ -457,7 +429,7 @@ jobs:
 
 
       # ======================================================
-      # 17. VERIFICAR BOOTSTRAP — LOTE 1
+      # 19. VERIFICAR BOOTSTRAP — LOTE 1
       # ======================================================
 
       - name: Check B3 bootstrap batch 1
@@ -475,7 +447,6 @@ jobs:
           complete = False
 
           if p.exists():
-
               data = json.loads(
                   p.read_text(
                       encoding="utf-8"
@@ -505,12 +476,11 @@ jobs:
           PY
 
           COMPLETE=$(cat /tmp/b3_batch1.txt)
-
           echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
 
 
       # ======================================================
-      # 18. B3 ANO CORRENTE — LOTE 2
+      # 20. B3 ANO CORRENTE — LOTE 2
       # ======================================================
 
       - name: Update current-year B3 batch 2
@@ -524,7 +494,7 @@ jobs:
 
 
       # ======================================================
-      # 19. VERIFICAR BOOTSTRAP — LOTE 2
+      # 21. VERIFICAR BOOTSTRAP — LOTE 2
       # ======================================================
 
       - name: Check B3 bootstrap batch 2
@@ -543,7 +513,6 @@ jobs:
           complete = False
 
           if p.exists():
-
               data = json.loads(
                   p.read_text(
                       encoding="utf-8"
@@ -573,12 +542,11 @@ jobs:
           PY
 
           COMPLETE=$(cat /tmp/b3_batch2.txt)
-
           echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
 
 
       # ======================================================
-      # 20. B3 ANO CORRENTE — LOTE 3
+      # 22. B3 ANO CORRENTE — LOTE 3
       # ======================================================
 
       - name: Update current-year B3 batch 3
@@ -595,7 +563,7 @@ jobs:
 
 
       # ======================================================
-      # 21. VERIFICAR BOOTSTRAP FINAL
+      # 23. VERIFICAR BOOTSTRAP FINAL
       # ======================================================
 
       - name: Check B3 bootstrap final status
@@ -661,11 +629,7 @@ jobs:
 
 
       # ======================================================
-      # 22. SALVAR SPRE + CURSOR
-      # ======================================================
-      #
-      # SEMPRE salva após os lotes.
-      #
+      # 24. SALVAR SPRE + CURSOR
       # ======================================================
 
       - name: Save B3 current-year SPRE cache
@@ -681,7 +645,7 @@ jobs:
 
 
       # ======================================================
-      # 23. INFORMAÇÃO DO BOOTSTRAP
+      # 25. INFORMAÇÃO DO BOOTSTRAP
       # ======================================================
 
       - name: Bootstrap progress information
@@ -704,22 +668,7 @@ jobs:
 
 
       # ======================================================
-      # 24. BUILD MARKET HISTORY V6 — UM LOTE
-      # ======================================================
-      #
-      # O V6 NÃO tenta mais processar todos os SPRE
-      # obrigatoriamente na mesma execução.
-      #
-      # Default:
-      #
-      # 25 SPRE por execução.
-      #
-      # Quando ainda houver SPRE pendentes:
-      #
-      # BUILD COMPLETE = false
-      #
-      # e o programa termina normalmente.
-      #
+      # 26. BUILD MARKET HISTORY V6 — UM LOTE
       # ======================================================
 
       - name: Build B3 market history LIVE V6
@@ -739,12 +688,9 @@ jobs:
           STATUS_FILE="data/live/b3/cache/market_history_v6/build_status.json"
 
           if [ ! -f "$STATUS_FILE" ]; then
-
             echo "ERRO:"
             echo "build_status.json V6 não foi criado."
-
             exit 1
-
           fi
 
           python - <<'PY'
@@ -860,21 +806,11 @@ jobs:
           PY
 
           COMPLETE=$(cat /tmp/b3_market_v6_complete.txt)
-
           echo "complete=$COMPLETE" >> "$GITHUB_OUTPUT"
 
 
       # ======================================================
-      # 25. SALVAR CACHE MARKET HISTORY V6
-      # ======================================================
-      #
-      # ESTE É O PONTO CRÍTICO DA CORREÇÃO.
-      #
-      # O cache é salvo DEPOIS DE CADA LOTE V6,
-      # mesmo que o Market History ainda não esteja completo.
-      #
-      # Assim as 25 partições processadas não são perdidas.
-      #
+      # 27. SALVAR CACHE MARKET HISTORY V6
       # ======================================================
 
       - name: Save B3 V6 market-history cache
@@ -892,7 +828,7 @@ jobs:
 
 
       # ======================================================
-      # 26. MARKET HISTORY V6 AINDA EM CONSTRUÇÃO
+      # 28. MARKET HISTORY V6 AINDA EM CONSTRUÇÃO
       # ======================================================
 
       - name: Market History V6 progress information
@@ -918,7 +854,7 @@ jobs:
 
 
       # ======================================================
-      # 27. VALIDAR MARKET HISTORY FINAL
+      # 29. VALIDAR MARKET HISTORY FINAL
       # ======================================================
 
       - name: Validate completed B3 market history
@@ -932,30 +868,21 @@ jobs:
           echo "=========================================="
 
           if [ ! -f "data/live/b3/market_history_live.csv" ]; then
-
             echo "ERRO:"
             echo "market_history_live.csv não foi criado."
-
             exit 1
-
           fi
 
           if [ ! -f "data/live/b3/spre_prices_live.csv" ]; then
-
             echo "ERRO:"
             echo "spre_prices_live.csv não foi criado."
-
             exit 1
-
           fi
 
           if [ ! -f "data/live/b3/market_history_manifest.json" ]; then
-
             echo "ERRO:"
             echo "market_history_manifest.json não foi criado."
-
             exit 1
-
           fi
 
           echo ""
@@ -968,7 +895,7 @@ jobs:
 
 
       # ======================================================
-      # 28. FUNDAMENTAL LIVE
+      # 30. FUNDAMENTAL LIVE
       # ======================================================
 
       - name: Build LIVE fundamental input
@@ -989,7 +916,7 @@ jobs:
 
 
       # ======================================================
-      # 29. AUDITAR FUNDAMENTAL LIVE
+      # 31. AUDITAR FUNDAMENTAL LIVE
       # ======================================================
 
       - name: Audit LIVE fundamental input
@@ -1001,11 +928,8 @@ jobs:
           FILE="data/live/fundamental/fundamental_input_live.csv"
 
           if [ ! -f "$FILE" ]; then
-
             echo "ERRO: fundamental_input_live.csv não encontrado."
-
             exit 1
-
           fi
 
           python - <<'PY'
@@ -1043,13 +967,11 @@ jobs:
           ]
 
           if missing:
-
               raise SystemExit(
                   f"ERRO: colunas ausentes: {missing}"
               )
 
           if df.empty:
-
               raise SystemExit(
                   "ERRO: fundamental LIVE vazio."
               )
@@ -1062,7 +984,6 @@ jobs:
           )
 
           if tickers.duplicated().any():
-
               raise SystemExit(
                   "ERRO: tickers duplicados."
               )
@@ -1084,40 +1005,76 @@ jobs:
 
 
       # ======================================================
-      # 30. BASE TÉCNICA ATUAL
+      # 32. CONSTRUIR BASE TÉCNICA LIVE
       # ======================================================
       #
-      # TRANSITÓRIO.
+      # Usa dados B3 atuais.
       #
-      # Técnico LIVE será tratado na etapa própria.
+      # Preserva Cell05B + Cell06B.
       #
-      # Nenhuma metodologia técnica é alterada aqui.
+      # Recalcula somente os 7 indicadores técnicos
+      # congelados pela pesquisa original.
+      #
+      # NÃO cria Technical Score.
+      # NÃO altera ranking fundamental.
       #
       # ======================================================
 
-      - name: Validate current technical input
+      - name: Build LIVE technical input
         if: >
           steps.bootstrap.outputs.complete == 'true' &&
           steps.market-build.outputs.complete == 'true'
 
         run: |
-          FILE="data/technical_prices.csv"
+          echo "=========================================="
+          echo "BUILD TECHNICAL INPUT LIVE"
+          echo "=========================================="
+
+          python -u build_technical_prices.py
+
+          echo "=========================================="
+          echo "TÉCNICO LIVE CONSTRUÍDO"
+          echo "=========================================="
+
+
+      # ======================================================
+      # 33. VALIDAR BASE TÉCNICA LIVE
+      # ======================================================
+
+      - name: Validate LIVE technical input
+        if: >
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
+        run: |
+          FILE="data/live/technical/technical_prices_live.csv"
+          MANIFEST="data/live/technical/technical_prices_live_manifest.json"
 
           if [ ! -f "$FILE" ]; then
-
             echo "ERRO:"
             echo "$FILE não encontrado."
-
             exit 1
+          fi
 
+          if [ ! -f "$MANIFEST" ]; then
+            echo "ERRO:"
+            echo "$MANIFEST não encontrado."
+            exit 1
           fi
 
           python - <<'PY'
+          import json
           import pandas as pd
           from pathlib import Path
 
           path = Path(
-              "data/technical_prices.csv"
+              "data/live/technical/"
+              "technical_prices_live.csv"
+          )
+
+          manifest_path = Path(
+              "data/live/technical/"
+              "technical_prices_live_manifest.json"
           )
 
           df = pd.read_csv(
@@ -1155,15 +1112,98 @@ jobs:
           ]
 
           if missing:
-
               raise SystemExit(
                   f"ERRO: colunas técnicas ausentes: {missing}"
               )
 
           if df.empty:
-
               raise SystemExit(
-                  "ERRO: technical_prices.csv vazio."
+                  "ERRO: technical_prices_live.csv vazio."
+              )
+
+          forbidden = [
+              "TECHNICAL_SCORE",
+              "BUY_SIGNAL",
+              "SELL_SIGNAL",
+              "MANDATORY_TRIGGER",
+              "VALIDATED_OOS_TRIGGER",
+          ]
+
+          violations = [
+              c
+              for c in forbidden
+              if c in df.columns
+          ]
+
+          if violations:
+              raise SystemExit(
+                  "ERRO: arquitetura técnica violada: "
+                  f"{violations}"
+              )
+
+          dates = pd.to_datetime(
+              df["DATE"],
+              errors="coerce",
+          )
+
+          latest_date = dates.max()
+
+          if pd.isna(latest_date):
+              raise SystemExit(
+                  "ERRO: nenhuma data técnica válida."
+              )
+
+          latest_rows = (
+              df.assign(_DATE=dates)
+              .sort_values("_DATE")
+              .groupby(
+                  "TICKER",
+                  as_index=False,
+              )
+              .tail(1)
+          )
+
+          indicators = [
+              "SMA200_SLOPE_20D",
+              "ATR_PCT",
+              "ROC_60",
+              "MACD_HIST_PCT",
+              "DIST_SMA_200",
+              "BB_WIDTH",
+              "DIST_SMA_50",
+          ]
+
+          complete_context = (
+              latest_rows[indicators]
+              .notna()
+              .all(axis=1)
+              .sum()
+          )
+
+          manifest = json.loads(
+              manifest_path.read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          if manifest.get("data_mode") != "LIVE":
+              raise SystemExit(
+                  "ERRO: manifesto técnico não está LIVE."
+              )
+
+          if manifest.get("methodology_mode") != "FROZEN":
+              raise SystemExit(
+                  "ERRO: metodologia técnica não está FROZEN."
+              )
+
+          if manifest.get("technical_score_created") is not False:
+              raise SystemExit(
+                  "ERRO: Technical Score indevido."
+              )
+
+          if manifest.get("ranking_modified") is not False:
+              raise SystemExit(
+                  "ERRO: ranking fundamental foi alterado."
               )
 
           print(
@@ -1177,17 +1217,35 @@ jobs:
           )
 
           print(
+              "Último pregão:",
+              latest_date.date(),
+          )
+
+          print(
+              "Contextos técnicos completos no último registro:",
+              int(complete_context),
+          )
+
+          print(
               "Technical Score: NÃO"
           )
 
           print(
-              "Base técnica atual: OK"
+              "Dados técnicos: LIVE"
+          )
+
+          print(
+              "Metodologia técnica: CONGELADA"
+          )
+
+          print(
+              "Base técnica LIVE: OK"
           )
           PY
 
 
       # ======================================================
-      # 31. EXECUTAR MOTOR
+      # 34. EXECUTAR MOTOR
       # ======================================================
 
       - name: Run B3 Investment Engine
@@ -1204,7 +1262,7 @@ jobs:
 
 
       # ======================================================
-      # 32. VALIDAR RESULTADO
+      # 35. VALIDAR RESULTADO
       # ======================================================
 
       - name: Validate engine results
@@ -1214,34 +1272,25 @@ jobs:
 
         run: |
           if [ ! -f "final_report/b3_investment_engine_results.csv" ]; then
-
             echo "ERRO: resultado completo não encontrado."
-
             exit 1
-
           fi
 
           if [ ! -f "final_report/b3_investment_engine_eligible.csv" ]; then
-
             echo "ERRO: elegíveis não encontrados."
-
             exit 1
-
           fi
 
           if [ ! -f "final_report/run_summary.json" ]; then
-
             echo "ERRO: run_summary.json não encontrado."
-
             exit 1
-
           fi
 
           echo "Resultado do motor: OK"
 
 
       # ======================================================
-      # 33. RELATÓRIO FINAL
+      # 36. RELATÓRIO FINAL
       # ======================================================
 
       - name: Generate final report
@@ -1254,12 +1303,7 @@ jobs:
 
 
       # ======================================================
-      # 34. MOSTRAR RESULTADO NO LOG
-      # ======================================================
-      #
-      # Facilita visualizar as ações selecionadas sem
-      # precisar abrir imediatamente o artifact.
-      #
+      # 37. MOSTRAR RESULTADO NO LOG
       # ======================================================
 
       - name: Show selected stocks
@@ -1278,7 +1322,6 @@ jobs:
           )
 
           if not path.exists():
-
               raise SystemExit(
                   "Arquivo de elegíveis não encontrado."
               )
@@ -1353,7 +1396,7 @@ jobs:
 
 
       # ======================================================
-      # 35. ARQUIVOS GERADOS
+      # 38. ARQUIVOS GERADOS
       # ======================================================
 
       - name: Show generated files
@@ -1377,7 +1420,6 @@ jobs:
 
           fi
 
-
           if [ -f "data/live/b3/current_year/.bootstrap_state.json" ]; then
 
             echo ""
@@ -1386,7 +1428,6 @@ jobs:
             cat data/live/b3/current_year/.bootstrap_state.json
 
           fi
-
 
           if [ -f "data/live/b3/cache/market_history_v6/build_status.json" ]; then
 
@@ -1397,6 +1438,18 @@ jobs:
 
           fi
 
+          if [ -d "data/live/technical" ]; then
+
+            echo ""
+            echo "TECHNICAL LIVE:"
+
+            find data/live/technical \
+              -maxdepth 1 \
+              -type f \
+              -print \
+              | sort
+
+          fi
 
           if [ -d "final_report" ]; then
 
@@ -1413,7 +1466,7 @@ jobs:
 
 
       # ======================================================
-      # 36. UPLOAD RELATÓRIO FINAL
+      # 39. UPLOAD RELATÓRIO FINAL
       # ======================================================
 
       - name: Upload final report
@@ -1436,7 +1489,7 @@ jobs:
 
 
       # ======================================================
-      # 37. UPLOAD MANIFESTOS
+      # 40. UPLOAD MANIFESTOS LIVE
       # ======================================================
 
       - name: Upload LIVE manifests
@@ -1452,6 +1505,7 @@ jobs:
             data/live/b3/*.json
             data/live/b3/current_year/.bootstrap_state.json
             data/live/b3/cache/market_history_v6/build_status.json
+            data/live/technical/technical_prices_live_manifest.json
 
           if-no-files-found: warn
 
@@ -1459,7 +1513,33 @@ jobs:
 
 
       # ======================================================
-      # 38. CHECKPOINTS
+      # 41. UPLOAD BASE TÉCNICA LIVE
+      # ======================================================
+
+      - name: Upload LIVE technical audit
+        if: >
+          success() &&
+          steps.bootstrap.outputs.complete == 'true' &&
+          steps.market-build.outputs.complete == 'true'
+
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: B3_INVESTMENT_ENGINE_TECHNICAL_LIVE
+
+          path: |
+            data/live/technical/technical_prices_live.csv
+            data/live/technical/technical_prices_live_manifest.json
+            data/live/technical/technical_corporate_actions_live.csv
+            data/live/technical/technical_residual_discontinuities_live.csv
+
+          if-no-files-found: error
+
+          retention-days: 30
+
+
+      # ======================================================
+      # 42. CHECKPOINTS
       # ======================================================
 
       - name: Upload checkpoints
@@ -1482,7 +1562,7 @@ jobs:
 
 
       # ======================================================
-      # 39. LOGS EM FALHA
+      # 43. LOGS EM FALHA
       # ======================================================
 
       - name: Upload logs on failure
