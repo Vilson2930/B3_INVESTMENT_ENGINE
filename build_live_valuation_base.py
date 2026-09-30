@@ -417,8 +417,123 @@ def load_fundamental_base():
             df[year_col]
         )
 
-        df = (
-            df
+        # ----------------------------------------------------
+        # Seleciona o exercício fundamental MAIS RECENTE
+        # que realmente possui dados contábeis utilizáveis.
+        #
+        # A grade LIVE pode conter o ano corrente antes de a
+        # DFP anual desse exercício estar completa. Portanto,
+        # não podemos simplesmente usar o maior ANO.
+        #
+        # Regra preservada do estudo:
+        # - financeiros: PL + lucro disponíveis;
+        # - não financeiros: PL + lucro + EBIT disponíveis.
+        #
+        # Não há ano hardcoded: quando o exercício novo estiver
+        # completo, ele passa a ser escolhido automaticamente.
+        # ----------------------------------------------------
+
+        pl_col = find_column(
+            df,
+            [
+                "PATRIMONIO_LIQUIDO",
+                "PATRIMONIO_LIQUIDO_R",
+                "PL_VAL",
+                "PL_VAL_BRL",
+            ],
+        )
+
+        lucro_col = find_column(
+            df,
+            [
+                "LUCRO_LIQUIDO",
+                "LUCRO_LIQUIDO_R",
+                "LUCRO_VAL",
+                "LUCRO_VAL_BRL",
+            ],
+        )
+
+        ebit_col = find_column(
+            df,
+            [
+                "EBIT",
+                "EBIT_R",
+                "EBIT_VAL",
+                "EBIT_VAL_BRL",
+            ],
+        )
+
+        motor_col = find_column(
+            df,
+            [
+                "MOTOR_FINAL",
+            ],
+        )
+
+        if pl_col is None or lucro_col is None:
+            raise DataInsufficientError(
+                "Fundamental base sem PL e/ou lucro "
+                "para selecionar exercício válido."
+            )
+
+        pl_ok = numeric(df[pl_col]).notna()
+        lucro_ok = numeric(df[lucro_col]).notna()
+
+        if motor_col is not None:
+            motor = (
+                df[motor_col]
+                .astype("string")
+                .str.strip()
+                .str.upper()
+            )
+
+            financeiro = motor.isin(
+                {
+                    "FINANCEIRO_BANCO",
+                    "FINANCEIRO_SEGUROS",
+                    "FINANCEIRO_ESPECIAL",
+                }
+            )
+        else:
+            financeiro = pd.Series(
+                False,
+                index=df.index,
+            )
+
+        if ebit_col is not None:
+            ebit_ok = numeric(df[ebit_col]).notna()
+        else:
+            ebit_ok = pd.Series(
+                False,
+                index=df.index,
+            )
+
+        df["_FUNDAMENTOS_VALUATION_OK"] = (
+            pl_ok
+            &
+            lucro_ok
+            &
+            (
+                financeiro
+                |
+                ebit_ok
+            )
+        )
+
+        validos = df[
+            df["_FUNDAMENTOS_VALUATION_OK"]
+            &
+            df["_ANO"].notna()
+        ].copy()
+
+        if validos.empty:
+            raise DataInsufficientError(
+                "Nenhum exercício com fundamentos "
+                "suficientes para valuation."
+            )
+
+        selecionados = (
+            validos
             .sort_values(
                 [
                     "CD_CVM",
@@ -431,6 +546,62 @@ def load_fundamental_base():
             )
             .tail(1)
             .copy()
+        )
+
+        # Fail-safe: preserva empresas sem linha completa para
+        # que permaneçam pendentes, sem inventar fundamentos.
+        cds_selecionados = set(
+            selecionados["CD_CVM"]
+            .dropna()
+            .tolist()
+        )
+
+        faltantes = df[
+            ~df["CD_CVM"].isin(cds_selecionados)
+        ].copy()
+
+        if not faltantes.empty:
+            faltantes = (
+                faltantes
+                .sort_values(
+                    [
+                        "CD_CVM",
+                        "_ANO",
+                    ]
+                )
+                .groupby(
+                    "CD_CVM",
+                    as_index=False,
+                )
+                .tail(1)
+                .copy()
+            )
+
+            selecionados = pd.concat(
+                [
+                    selecionados,
+                    faltantes,
+                ],
+                ignore_index=True,
+            )
+
+        df = selecionados.copy()
+
+        anos_validos = (
+            df.loc[
+                df["_FUNDAMENTOS_VALUATION_OK"],
+                "_ANO",
+            ]
+            .dropna()
+            .astype(int)
+            .value_counts()
+            .sort_index()
+            .to_dict()
+        )
+
+        print(
+            "Exercícios fundamentais selecionados:",
+            anos_validos,
         )
     else:
         if df["CD_CVM"].duplicated().any():
