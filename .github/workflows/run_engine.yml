@@ -146,7 +146,24 @@ jobs:
 
 
       # ======================================================
-      # 8. RESTAURAR COTAHIST
+      # 8. RESTAURAR CACHE CVM
+      # ======================================================
+
+      - name: Restore CVM LIVE cache
+        id: restore-cvm
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/live/cvm
+
+          key: cvm-live-v3-${{ runner.os }}-${{ github.run_id }}
+
+          restore-keys: |
+            cvm-live-v3-${{ runner.os }}-
+
+
+      # ======================================================
+      # 9. RESTAURAR COTAHIST
       # ======================================================
 
       - name: Restore B3 COTAHIST cache
@@ -368,7 +385,27 @@ jobs:
 
 
       # ======================================================
-      # 14. HISTÓRICO B3
+      # 14. SALVAR CACHE CVM
+      # ======================================================
+      #
+      # Salva cadastro, DFP, ITR, FCA e manifesto.
+      # A chave é única por execução; na próxima execução
+      # o restore-keys recupera o snapshot mais recente.
+      #
+      # ======================================================
+
+      - name: Save CVM LIVE cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/live/cvm
+
+          key: cvm-live-v3-${{ runner.os }}-${{ github.run_id }}
+
+
+      # ======================================================
+      # 15. HISTÓRICO B3
       # ======================================================
 
       - name: Update official B3 historical data
