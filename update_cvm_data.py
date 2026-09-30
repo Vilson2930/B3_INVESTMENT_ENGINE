@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import random
 import socket
 import sys
 import time
+import zipfile
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,26 +15,45 @@ from urllib.request import Request, urlopen
 
 # ============================================================
 # B3 INVESTMENT ENGINE
-# CAMADA DE PRODUÇÃO — ATUALIZAÇÃO OFICIAL CVM V2
+# CAMADA DE PRODUÇÃO — ATUALIZAÇÃO OFICIAL CVM V3
+# INCREMENTAL / CACHE-FIRST / FAIL-SAFE
 # ============================================================
 #
-# RESPONSABILIDADE:
-# - atualizar a matéria-prima oficial da CVM;
-# - preservar a metodologia congelada;
-# - NÃO calcular Quality Score;
-# - NÃO calcular Valuation;
-# - NÃO calcular ranking;
-# - NÃO alterar checkpoints do estudo.
+# OBJETIVO
+# ------------------------------------------------------------
+# Atualizar exclusivamente a matéria-prima oficial da CVM.
 #
-# CORREÇÃO V2:
-# - retry automático para falhas transitórias;
-# - exponential backoff;
-# - tratamento de timeout;
-# - tratamento de HTTP transitório;
-# - download atômico preservado;
-# - arquivo válido anterior nunca é substituído
-#   por download parcial;
-# - nenhuma imputação ou dado inventado.
+# NÃO altera:
+# - Quality Engine;
+# - Valuation;
+# - Investability;
+# - ranking;
+# - Technical Engine;
+# - metodologia congelada.
+#
+# ARQUITETURA V3
+# ------------------------------------------------------------
+# 1. Arquivos históricos válidos já existentes NÃO são
+#    baixados novamente.
+#
+# 2. Anos encerrados são tratados como histórico persistente.
+#
+# 3. Ano corrente pode ser atualizado porque DFP/ITR/FCA
+#    podem receber novas versões durante o exercício.
+#
+# 4. Cadastro CVM é atualizado quando a rede está disponível.
+#
+# 5. Se a rede CVM estiver indisponível:
+#       - não espera horas;
+#       - não destrói arquivos locais;
+#       - não inventa dados;
+#       - utiliza somente arquivo local válido quando permitido.
+#
+# 6. Para dados que precisam ser atuais, a impossibilidade
+#    de confirmar frescor é registrada explicitamente.
+#
+# 7. Downloads continuam atômicos.
+#
 # ============================================================
 
 
@@ -80,29 +99,20 @@ FCA_BASE_URL = (
 # ============================================================
 
 USER_AGENT = (
-    "B3_INVESTMENT_ENGINE/2.0 "
+    "B3_INVESTMENT_ENGINE/3.0 "
     "(official CVM public-data updater)"
 )
 
-TIMEOUT_SECONDS = 120
+TIMEOUT_SECONDS = 20
 
-# Número total de tentativas para falhas transitórias.
-MAX_RETRIES = 5
+# Não transformar indisponibilidade persistente em horas
+# de espera.
+MAX_RETRIES = 2
 
-# Backoff:
-# tentativa 1 -> ~2 s
-# tentativa 2 -> ~4 s
-# tentativa 3 -> ~8 s
-# tentativa 4 -> ~16 s
-# tentativa 5 -> falha definitiva
-BACKOFF_BASE_SECONDS = 2.0
-BACKOFF_MAX_SECONDS = 30.0
+RETRY_DELAY_SECONDS = 3
 
-# Pequeno jitter evita repetir conexão exatamente
-# no mesmo instante.
-BACKOFF_JITTER_SECONDS = 0.75
+FIRST_STUDY_YEAR = 2019
 
-# HTTPs normalmente transitórios.
 TRANSIENT_HTTP_CODES = {
     408,
     425,
@@ -113,11 +123,6 @@ TRANSIENT_HTTP_CODES = {
     504,
 }
 
-# O estudo congelado original começa em 2019.
-# Para produção, mantemos essa origem histórica e avançamos
-# automaticamente até o ano corrente.
-FIRST_STUDY_YEAR = 2019
-
 
 # ============================================================
 # EXCEÇÕES
@@ -127,11 +132,16 @@ class CVMDataError(RuntimeError):
     pass
 
 
+class CVMNetworkError(CVMDataError):
+    pass
+
+
 # ============================================================
 # UTILIDADES
 # ============================================================
 
 def utc_now_iso() -> str:
+
     return datetime.now(
         timezone.utc
     ).isoformat()
@@ -147,6 +157,7 @@ def ensure_directories() -> None:
         ITR_DIR,
         FCA_DIR,
     ):
+
         directory.mkdir(
             parents=True,
             exist_ok=True,
@@ -167,6 +178,7 @@ def sha256_file(
             ),
             b"",
         ):
+
             digest.update(chunk)
 
     return digest.hexdigest()
@@ -188,99 +200,116 @@ def build_request(
     )
 
 
+def file_metadata(
+    path: Path,
+    source: str,
+) -> dict:
+
+    return {
+        "url": source,
+        "path": str(path),
+        "size_bytes": (
+            path.stat().st_size
+        ),
+        "sha256": sha256_file(
+            path
+        ),
+    }
+
+
 # ============================================================
-# RETRY / BACKOFF
+# VALIDAÇÃO LOCAL
 # ============================================================
 
-def retry_delay(
-    failed_attempt: int,
-) -> float:
-    """
-    failed_attempt começa em 1.
-
-    Exemplo:
-    1 -> aproximadamente 2 s
-    2 -> aproximadamente 4 s
-    3 -> aproximadamente 8 s
-    4 -> aproximadamente 16 s
-    """
-
-    delay = min(
-        BACKOFF_BASE_SECONDS
-        * (2 ** (failed_attempt - 1)),
-        BACKOFF_MAX_SECONDS,
-    )
-
-    delay += random.uniform(
-        0.0,
-        BACKOFF_JITTER_SECONDS,
-    )
-
-    return delay
-
-
-def wait_before_retry(
-    attempt: int,
-    url: str,
-    reason: str,
-) -> None:
-
-    delay = retry_delay(
-        attempt
-    )
-
-    print(
-        f"  ! tentativa {attempt}/{MAX_RETRIES} "
-        f"falhou: {reason}",
-        flush=True,
-    )
-
-    print(
-        f"  ↻ nova tentativa em "
-        f"{delay:.1f}s",
-        flush=True,
-    )
-
-    print(
-        f"    {url}",
-        flush=True,
-    )
-
-    time.sleep(delay)
-
-
-def is_transient_http_error(
-    code: int,
+def valid_nonempty_file(
+    path: Path,
 ) -> bool:
 
-    return (
-        code in TRANSIENT_HTTP_CODES
-    )
+    try:
+
+        return (
+            path.exists()
+            and
+            path.is_file()
+            and
+            path.stat().st_size > 0
+        )
+
+    except OSError:
+
+        return False
+
+
+def valid_csv_file(
+    path: Path,
+) -> bool:
+
+    if not valid_nonempty_file(
+        path
+    ):
+        return False
+
+    try:
+
+        with path.open(
+            "rb"
+        ) as file:
+
+            sample = file.read(
+                4096
+            )
+
+        if not sample:
+            return False
+
+        # Cadastro oficial da CVM é texto/CSV.
+        # Não tentamos reinterpretar seu conteúdo.
+        return True
+
+    except OSError:
+
+        return False
+
+
+def valid_zip_file(
+    path: Path,
+) -> bool:
+
+    if not valid_nonempty_file(
+        path
+    ):
+        return False
+
+    try:
+
+        with zipfile.ZipFile(
+            path,
+            "r",
+        ) as archive:
+
+            if not archive.namelist():
+                return False
+
+            bad_file = archive.testzip()
+
+            return bad_file is None
+
+    except (
+        zipfile.BadZipFile,
+        OSError,
+    ):
+
+        return False
 
 
 # ============================================================
-# CONEXÃO COM RETRY
+# REDE
 # ============================================================
 
-def open_with_retry(
+def network_request(
     url: str,
     method: str = "GET",
 ):
-    """
-    Abre recurso oficial da CVM com retry para falhas
-    transitórias de rede.
-
-    Retorna o response aberto.
-
-    O chamador deve usar:
-
-        with open_with_retry(...) as response:
-            ...
-
-    HTTP 404 não é tratado aqui como indisponibilidade
-    silenciosa. remote_exists() possui a semântica específica
-    para isso.
-    """
 
     last_error = None
 
@@ -305,19 +334,14 @@ def open_with_retry(
 
             last_error = exc
 
-            if not is_transient_http_error(
+            # HTTP não transitório:
+            # deixa o chamador decidir a semântica.
+            if (
                 exc.code
+                not in TRANSIENT_HTTP_CODES
             ):
+
                 raise
-
-            if attempt >= MAX_RETRIES:
-                break
-
-            wait_before_retry(
-                attempt,
-                url,
-                f"HTTP {exc.code}",
-            )
 
         except (
             URLError,
@@ -329,48 +353,39 @@ def open_with_retry(
 
             last_error = exc
 
-            if attempt >= MAX_RETRIES:
-                break
+        if attempt < MAX_RETRIES:
 
-            wait_before_retry(
-                attempt,
-                url,
-                (
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                ),
+            print(
+                f"  ! rede CVM indisponível "
+                f"— tentativa "
+                f"{attempt}/{MAX_RETRIES}",
+                flush=True,
             )
 
-    raise CVMDataError(
-        "Falha de conexão com a CVM após "
-        f"{MAX_RETRIES} tentativas: "
-        f"{url}. "
+            print(
+                f"  ↻ nova tentativa em "
+                f"{RETRY_DELAY_SECONDS}s",
+                flush=True,
+            )
+
+            time.sleep(
+                RETRY_DELAY_SECONDS
+            )
+
+    raise CVMNetworkError(
+        "CVM inacessível após "
+        f"{MAX_RETRIES} tentativas. "
         f"Último erro: {last_error}"
     ) from last_error
 
 
-# ============================================================
-# DISPONIBILIDADE REMOTA
-# ============================================================
-
 def remote_exists(
     url: str,
 ) -> bool:
-    """
-    Confirma se um recurso oficial está disponível.
-
-    Primeiro tenta HEAD.
-
-    - 404 = recurso não disponível;
-    - 400/403/405 = servidor pode não aceitar HEAD,
-      então utiliza GET;
-    - falhas transitórias recebem retry automático;
-    - outros erros HTTP são considerados erro real.
-    """
 
     try:
 
-        with open_with_retry(
+        with network_request(
             url,
             method="HEAD",
         ) as response:
@@ -395,24 +410,20 @@ def remote_exists(
             403,
             405,
         ):
+
             raise CVMDataError(
                 f"Erro HTTP ao consultar "
                 f"{url}: {exc.code}"
             ) from exc
 
-    # --------------------------------------------------------
-    # FALLBACK GET
-    # --------------------------------------------------------
-
+    # Alguns servidores recusam HEAD.
     try:
 
-        with open_with_retry(
+        with network_request(
             url,
             method="GET",
         ) as response:
 
-            # Lê somente um byte para confirmar
-            # disponibilidade.
             response.read(1)
 
             status = getattr(
@@ -437,212 +448,100 @@ def remote_exists(
 
 
 # ============================================================
-# DOWNLOAD ATÔMICO COM RETRY
+# DOWNLOAD ATÔMICO
 # ============================================================
 
 def download_atomic(
     url: str,
     destination: Path,
+    validator,
 ) -> dict:
-    """
-    Baixa o recurso oficial para arquivo temporário.
-
-    O arquivo definitivo somente é substituído quando:
-    - a resposta HTTP é válida;
-    - o download termina;
-    - o arquivo temporário existe;
-    - o arquivo temporário não está vazio.
-
-    Se todas as tentativas falharem:
-    - .tmp é removido;
-    - eventual arquivo definitivo anterior permanece intacto;
-    - a execução falha claramente.
-    """
 
     destination.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    temp_path = (
-        destination.with_suffix(
-            destination.suffix + ".tmp"
-        )
+    temp_path = destination.with_suffix(
+        destination.suffix + ".tmp"
     )
 
     if temp_path.exists():
         temp_path.unlink()
 
-    last_error = None
+    try:
 
-    for attempt in range(
-        1,
-        MAX_RETRIES + 1,
-    ):
+        with network_request(
+            url,
+            method="GET",
+        ) as response:
+
+            status = getattr(
+                response,
+                "status",
+                200,
+            )
+
+            if not (
+                200 <= status < 300
+            ):
+
+                raise CVMDataError(
+                    f"HTTP {status}: {url}"
+                )
+
+            with temp_path.open(
+                "wb"
+            ) as output:
+
+                while True:
+
+                    chunk = response.read(
+                        1024 * 1024
+                    )
+
+                    if not chunk:
+                        break
+
+                    output.write(chunk)
+
+        if not validator(
+            temp_path
+        ):
+
+            raise CVMDataError(
+                "Arquivo recebido da CVM "
+                "é vazio, inválido ou corrompido: "
+                f"{url}"
+            )
+
+        temp_path.replace(
+            destination
+        )
+
+    except Exception:
 
         if temp_path.exists():
             temp_path.unlink()
 
-        request = build_request(
-            url,
-            method="GET",
-        )
+        raise
 
-        try:
+    result = file_metadata(
+        destination,
+        url,
+    )
 
-            with urlopen(
-                request,
-                timeout=TIMEOUT_SECONDS,
-            ) as response:
+    result.update(
+        {
+            "downloaded_at_utc":
+                utc_now_iso(),
 
-                status = getattr(
-                    response,
-                    "status",
-                    200,
-                )
+            "source_mode":
+                "DOWNLOADED",
+        }
+    )
 
-                if not (
-                    200 <= status < 300
-                ):
-                    raise CVMDataError(
-                        f"HTTP {status}: {url}"
-                    )
-
-                with temp_path.open(
-                    "wb"
-                ) as output:
-
-                    while True:
-
-                        chunk = response.read(
-                            1024 * 1024
-                        )
-
-                        if not chunk:
-                            break
-
-                        output.write(chunk)
-
-            # ------------------------------------------------
-            # VALIDAÇÃO ANTES DA TROCA
-            # ------------------------------------------------
-
-            if (
-                not temp_path.exists()
-                or
-                temp_path.stat().st_size
-                == 0
-            ):
-                raise CVMDataError(
-                    "Arquivo vazio recebido "
-                    f"da CVM: {url}"
-                )
-
-            # ------------------------------------------------
-            # TROCA ATÔMICA
-            # ------------------------------------------------
-
-            temp_path.replace(
-                destination
-            )
-
-            return {
-                "url": url,
-                "path": str(
-                    destination
-                ),
-                "size_bytes":
-                    destination.stat().st_size,
-                "sha256":
-                    sha256_file(
-                        destination
-                    ),
-                "downloaded_at_utc":
-                    utc_now_iso(),
-            }
-
-        except HTTPError as exc:
-
-            last_error = exc
-
-            if temp_path.exists():
-                temp_path.unlink()
-
-            if not is_transient_http_error(
-                exc.code
-            ):
-                raise CVMDataError(
-                    f"Erro HTTP ao baixar "
-                    f"{url}: {exc.code}"
-                ) from exc
-
-            if attempt >= MAX_RETRIES:
-                break
-
-            wait_before_retry(
-                attempt,
-                url,
-                f"HTTP {exc.code}",
-            )
-
-        except (
-            URLError,
-            TimeoutError,
-            socket.timeout,
-            ConnectionError,
-            OSError,
-        ) as exc:
-
-            last_error = exc
-
-            if temp_path.exists():
-                temp_path.unlink()
-
-            if attempt >= MAX_RETRIES:
-                break
-
-            wait_before_retry(
-                attempt,
-                url,
-                (
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                ),
-            )
-
-        except CVMDataError as exc:
-
-            last_error = exc
-
-            if temp_path.exists():
-                temp_path.unlink()
-
-            if attempt >= MAX_RETRIES:
-                break
-
-            wait_before_retry(
-                attempt,
-                url,
-                str(exc),
-            )
-
-        except Exception:
-
-            if temp_path.exists():
-                temp_path.unlink()
-
-            raise
-
-    if temp_path.exists():
-        temp_path.unlink()
-
-    raise CVMDataError(
-        "Falha ao baixar recurso oficial "
-        "da CVM após "
-        f"{MAX_RETRIES} tentativas: "
-        f"{url}. "
-        f"Último erro: {last_error}"
-    ) from last_error
+    return result
 
 
 # ============================================================
@@ -662,21 +561,65 @@ def update_company_registry() -> dict:
         "cad_cia_aberta.csv"
     )
 
-    result = download_atomic(
-        CADASTRO_URL,
-        destination,
+    local_valid = valid_csv_file(
+        destination
     )
 
-    print(
-        "✓ cadastro CVM atualizado",
-        flush=True,
-    )
+    try:
 
-    return result
+        result = download_atomic(
+            CADASTRO_URL,
+            destination,
+            valid_csv_file,
+        )
+
+        print(
+            "✓ cadastro CVM atualizado",
+            flush=True,
+        )
+
+        return result
+
+    except CVMNetworkError as exc:
+
+        if not local_valid:
+            raise
+
+        print(
+            "  ! CVM temporariamente "
+            "inacessível.",
+            flush=True,
+        )
+
+        print(
+            "  ✓ cadastro local válido "
+            "preservado.",
+            flush=True,
+        )
+
+        result = file_metadata(
+            destination,
+            CADASTRO_URL,
+        )
+
+        result.update(
+            {
+                "source_mode":
+                    "LOCAL_FALLBACK_NETWORK_UNAVAILABLE",
+
+                "network_error":
+                    str(exc),
+
+                "freshness_confirmed":
+                    False,
+            }
+        )
+
+        return result
 
 
 # ============================================================
-# DFP / ITR / FCA
+# URLs DFP / ITR / FCA
 # ============================================================
 
 def dfp_url(
@@ -709,9 +652,14 @@ def fca_url(
     )
 
 
+# ============================================================
+# ARQUIVO ANUAL
+# ============================================================
+
 def update_year_file(
     document_type: str,
     year: int,
+    current_year: int,
 ) -> dict:
 
     document_type = (
@@ -763,19 +711,168 @@ def update_year_file(
             f"{document_type}"
         )
 
-    if not remote_exists(
-        url
+    local_valid = valid_zip_file(
+        destination
+    )
+
+    historical_closed_year = (
+        year < current_year
+    )
+
+    # ========================================================
+    # ANOS ENCERRADOS
+    # ========================================================
+    #
+    # Arquivo válido já armazenado:
+    # não baixa novamente.
+    #
+    # ========================================================
+
+    if (
+        historical_closed_year
+        and
+        local_valid
     ):
+
+        print(
+            f"✓ {document_type} {year}: "
+            "LOCAL_VALID",
+            flush=True,
+        )
+
+        result = file_metadata(
+            destination,
+            url,
+        )
+
+        result.update(
+            {
+                "document_type":
+                    document_type,
+
+                "year":
+                    year,
+
+                "available":
+                    True,
+
+                "source_mode":
+                    "LOCAL_VALID",
+
+                "freshness_confirmed":
+                    True,
+            }
+        )
+
+        return result
+
+    # ========================================================
+    # ANO CORRENTE OU ARQUIVO HISTÓRICO AUSENTE
+    # ========================================================
+
+    try:
+
+        exists = remote_exists(
+            url
+        )
+
+    except CVMNetworkError as exc:
+
+        if local_valid:
+
+            print(
+                f"  ! {document_type} {year}: "
+                "CVM inacessível; "
+                "arquivo local válido preservado.",
+                flush=True,
+            )
+
+            result = file_metadata(
+                destination,
+                url,
+            )
+
+            result.update(
+                {
+                    "document_type":
+                        document_type,
+
+                    "year":
+                        year,
+
+                    "available":
+                        True,
+
+                    "source_mode":
+                        "LOCAL_FALLBACK_NETWORK_UNAVAILABLE",
+
+                    "freshness_confirmed":
+                        False,
+
+                    "network_error":
+                        str(exc),
+                }
+            )
+
+            return result
+
+        raise
+
+    if not exists:
+
+        if local_valid:
+
+            print(
+                f"✓ {document_type} {year}: "
+                "arquivo local válido; "
+                "recurso remoto não disponível.",
+                flush=True,
+            )
+
+            result = file_metadata(
+                destination,
+                url,
+            )
+
+            result.update(
+                {
+                    "document_type":
+                        document_type,
+
+                    "year":
+                        year,
+
+                    "available":
+                        True,
+
+                    "source_mode":
+                        "LOCAL_VALID_REMOTE_NOT_AVAILABLE",
+
+                    "freshness_confirmed":
+                        False,
+                }
+            )
+
+            return result
 
         return {
             "document_type":
                 document_type,
+
             "year":
                 year,
+
             "available":
                 False,
+
             "url":
                 url,
+
+            "source_mode":
+                "REMOTE_NOT_AVAILABLE",
+
+            "freshness_confirmed":
+                True,
         }
 
     print(
@@ -784,17 +881,64 @@ def update_year_file(
         flush=True,
     )
 
-    result = download_atomic(
-        url,
-        destination,
-    )
+    try:
+
+        result = download_atomic(
+            url,
+            destination,
+            valid_zip_file,
+        )
+
+    except CVMNetworkError as exc:
+
+        if not local_valid:
+            raise
+
+        print(
+            f"  ! download "
+            f"{document_type} {year} "
+            "não concluído.",
+            flush=True,
+        )
+
+        print(
+            "  ✓ versão local válida "
+            "preservada.",
+            flush=True,
+        )
+
+        result = file_metadata(
+            destination,
+            url,
+        )
+
+        result.update(
+            {
+                "source_mode":
+                    "LOCAL_FALLBACK_NETWORK_UNAVAILABLE",
+
+                "freshness_confirmed":
+                    False,
+
+                "network_error":
+                    str(exc),
+            }
+        )
+
+    else:
+
+        result[
+            "freshness_confirmed"
+        ] = True
 
     result.update(
         {
             "document_type":
                 document_type,
+
             "year":
                 year,
+
             "available":
                 True,
         }
@@ -809,7 +953,7 @@ def update_year_file(
 
 
 # ============================================================
-# MANIFESTO / AUDITORIA
+# MANIFESTO
 # ============================================================
 
 def write_manifest(
@@ -843,6 +987,20 @@ def write_manifest(
         )
     ]
 
+    all_results = (
+        [registry]
+        + dfp_results
+        + itr_results
+        + fca_results
+    )
+
+    network_fallback_used = any(
+        x.get("source_mode")
+        ==
+        "LOCAL_FALLBACK_NETWORK_UNAVAILABLE"
+        for x in all_results
+    )
+
     manifest = {
         "engine":
             "B3_INVESTMENT_ENGINE",
@@ -855,16 +1013,22 @@ def write_manifest(
 
         "updater": {
             "version":
-                "V2_RETRY_BACKOFF",
-
-            "max_retries":
-                MAX_RETRIES,
+                "V3_INCREMENTAL_CACHE_FIRST",
 
             "timeout_seconds":
                 TIMEOUT_SECONDS,
 
-            "download_atomic":
+            "max_retries":
+                MAX_RETRIES,
+
+            "historical_cache":
                 True,
+
+            "atomic_download":
+                True,
+
+            "network_fallback_used":
+                network_fallback_used,
         },
 
         "methodology": {
@@ -989,17 +1153,7 @@ def validate_current_data(
             "nenhum ITR disponível."
         )
 
-    # --------------------------------------------------------
-    # ITR
-    # --------------------------------------------------------
-    #
     # Regra original preservada.
-    #
-    # O ITR deve acompanhar o exercício corrente quando o
-    # arquivo do ano corrente já existir.
-    #
-    # --------------------------------------------------------
-
     if latest_itr < current_year:
 
         raise CVMDataError(
@@ -1010,14 +1164,7 @@ def validate_current_data(
             f"{current_year}."
         )
 
-    # --------------------------------------------------------
-    # DFP
-    # --------------------------------------------------------
-    #
     # Regra original preservada.
-    #
-    # --------------------------------------------------------
-
     if latest_dfp < (
         current_year - 1
     ):
@@ -1048,7 +1195,12 @@ def main() -> int:
     )
 
     print(
-        "ATUALIZAÇÃO OFICIAL CVM V2",
+        "ATUALIZAÇÃO OFICIAL CVM V3",
+        flush=True,
+    )
+
+    print(
+        "INCREMENTAL / CACHE-FIRST",
         flush=True,
     )
 
@@ -1083,9 +1235,16 @@ def main() -> int:
     )
 
     print(
+        "Arquitetura: "
+        "histórico local válido não é "
+        "baixado novamente",
+        flush=True,
+    )
+
+    print(
         "Rede: "
-        f"{MAX_RETRIES} tentativas "
-        "com backoff automático",
+        f"{MAX_RETRIES} tentativas; "
+        f"timeout {TIMEOUT_SECONDS}s",
         flush=True,
     )
 
@@ -1123,6 +1282,7 @@ def main() -> int:
         result = update_year_file(
             "DFP",
             year,
+            current_year,
         )
 
         dfp_results.append(
@@ -1165,6 +1325,7 @@ def main() -> int:
         result = update_year_file(
             "ITR",
             year,
+            current_year,
         )
 
         itr_results.append(
@@ -1207,6 +1368,7 @@ def main() -> int:
         result = update_year_file(
             "FCA",
             year,
+            current_year,
         )
 
         fca_results.append(
@@ -1284,6 +1446,13 @@ def main() -> int:
     )
 
     print(
+        "Fallback de rede utilizado:",
+        manifest["updater"]
+        ["network_fallback_used"],
+        flush=True,
+    )
+
+    print(
         "Manifesto:",
         MANIFEST_PATH,
         flush=True,
@@ -1323,6 +1492,17 @@ if __name__ == "__main__":
         sys.exit(
             main()
         )
+
+    except CVMNetworkError as exc:
+
+        print(
+            "\nERRO DE REDE CVM: "
+            f"{exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        sys.exit(2)
 
     except CVMDataError as exc:
 
