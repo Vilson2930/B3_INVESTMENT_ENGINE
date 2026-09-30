@@ -8,9 +8,9 @@
 # Construir e manter:
 #
 # 1. data/live/b3/market_history_live.csv
-#    - histórico oficial de liquidez;
+#    - histórico oficial de preços OHLC e liquidez;
 #    - fonte: B3 COTAHIST;
-#    - VOLTOT oficial.
+#    - OPEN/HIGH/LOW/CLOSE e VOLTOT oficiais.
 #
 # 2. data/live/b3/spre_prices_live.csv
 #    - preços oficiais do ano corrente;
@@ -534,6 +534,10 @@ def empty_market() -> pd.DataFrame:
         columns=[
             "TICKER",
             "DATA",
+            "OPEN",
+            "HIGH",
+            "LOW",
+            "CLOSE",
             "VOLTOT",
         ]
     )
@@ -588,37 +592,39 @@ def parse_cotahist_line(
         return None
 
     try:
-
         data = pd.to_datetime(
             data_raw,
             format="%Y%m%d",
             errors="raise",
         )
-
     except Exception:
         return None
 
-    vol_raw = (
-        line[170:188]
-        .strip()
-    )
-
     try:
+        open_price = int(line[56:69].strip()) / 100.0
+        high_price = int(line[69:82].strip()) / 100.0
+        low_price = int(line[82:95].strip()) / 100.0
+        close_price = int(line[108:121].strip()) / 100.0
+        voltot = int(line[170:188].strip()) / 100.0
+    except (TypeError, ValueError):
+        return None
 
-        voltot = (
-            int(vol_raw)
-            / 100.0
-        )
-
-    except (
-        TypeError,
-        ValueError,
+    if (
+        open_price <= 0
+        or high_price <= 0
+        or low_price <= 0
+        or close_price <= 0
+        or voltot < 0
     ):
         return None
 
     return {
         "TICKER": ticker,
         "DATA": data,
+        "OPEN": float(open_price),
+        "HIGH": float(high_price),
+        "LOW": float(low_price),
+        "CLOSE": float(close_price),
         "VOLTOT": float(voltot),
     }
 
@@ -718,21 +724,36 @@ def parse_cotahist_zip(
         errors="coerce",
     )
 
-    df["VOLTOT"] = pd.to_numeric(
-        df["VOLTOT"],
-        errors="coerce",
-    )
+    for column in [
+        "OPEN",
+        "HIGH",
+        "LOW",
+        "CLOSE",
+        "VOLTOT",
+    ]:
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
 
     df = df.dropna(
         subset=[
             "TICKER",
             "DATA",
+            "OPEN",
+            "HIGH",
+            "LOW",
+            "CLOSE",
             "VOLTOT",
         ]
     )
 
     df = df[
-        df["VOLTOT"] >= 0
+        (df["OPEN"] > 0)
+        & (df["HIGH"] > 0)
+        & (df["LOW"] > 0)
+        & (df["CLOSE"] > 0)
+        & (df["VOLTOT"] >= 0)
     ].copy()
 
     df = (
@@ -744,8 +765,14 @@ def parse_cotahist_zip(
             ],
             as_index=False,
             sort=False,
-        )["VOLTOT"]
-        .sum()
+        )
+        .agg(
+            OPEN=("OPEN", "first"),
+            HIGH=("HIGH", "max"),
+            LOW=("LOW", "min"),
+            CLOSE=("CLOSE", "last"),
+            VOLTOT=("VOLTOT", "sum"),
+        )
     )
 
     return df
@@ -1252,6 +1279,10 @@ def valid_cotahist_partition(
     required = {
         "TICKER",
         "DATA",
+        "OPEN",
+        "HIGH",
+        "LOW",
+        "CLOSE",
         "VOLTOT",
     }
 
@@ -1782,6 +1813,10 @@ def consolidate_cotahist(
             usecols=[
                 "TICKER",
                 "DATA",
+                "OPEN",
+                "HIGH",
+                "LOW",
+                "CLOSE",
                 "VOLTOT",
             ],
             low_memory=False,
@@ -1806,21 +1841,36 @@ def consolidate_cotahist(
         errors="coerce",
     )
 
-    market["VOLTOT"] = pd.to_numeric(
-        market["VOLTOT"],
-        errors="coerce",
-    )
+    for column in [
+        "OPEN",
+        "HIGH",
+        "LOW",
+        "CLOSE",
+        "VOLTOT",
+    ]:
+        market[column] = pd.to_numeric(
+            market[column],
+            errors="coerce",
+        )
 
     market = market.dropna(
         subset=[
             "TICKER",
             "DATA",
+            "OPEN",
+            "HIGH",
+            "LOW",
+            "CLOSE",
             "VOLTOT",
         ]
     )
 
     market = market[
-        market["VOLTOT"] >= 0
+        (market["OPEN"] > 0)
+        & (market["HIGH"] > 0)
+        & (market["LOW"] > 0)
+        & (market["CLOSE"] > 0)
+        & (market["VOLTOT"] >= 0)
     ].copy()
 
     market = (
@@ -1832,8 +1882,14 @@ def consolidate_cotahist(
             ],
             as_index=False,
             sort=False,
-        )["VOLTOT"]
-        .sum()
+        )
+        .agg(
+            OPEN=("OPEN", "first"),
+            HIGH=("HIGH", "max"),
+            LOW=("LOW", "min"),
+            CLOSE=("CLOSE", "last"),
+            VOLTOT=("VOLTOT", "sum"),
+        )
     )
 
     market = (
@@ -2125,6 +2181,10 @@ def publish_outputs(
         [
             "TICKER",
             "DATA",
+            "OPEN",
+            "HIGH",
+            "LOW",
+            "CLOSE",
             "VOLTOT",
         ]
     ].copy()
