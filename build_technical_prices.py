@@ -52,15 +52,10 @@ import pandas as pd
 BASE_DIR = Path(__file__).resolve().parent
 
 DATA_DIR = BASE_DIR / "data"
-
 LIVE_DIR = DATA_DIR / "live"
-
 B3_DIR = LIVE_DIR / "b3"
-
 FUNDAMENTAL_DIR = LIVE_DIR / "fundamental"
-
 PROCESSED_DIR = LIVE_DIR / "processed"
-
 TECHNICAL_DIR = LIVE_DIR / "technical"
 
 TECHNICAL_DIR.mkdir(
@@ -206,7 +201,9 @@ def normalize_columns(df):
     result = df.copy()
 
     result.columns = [
-        str(column).strip().upper()
+        str(column)
+        .strip()
+        .upper()
         for column in result.columns
     ]
 
@@ -217,16 +214,23 @@ def normalize_columns(df):
 # 9. LOCALIZAR COLUNA
 # ============================================================
 
-def find_column(df, candidates, required=True):
+def find_column(
+    df,
+    candidates,
+    required=True,
+):
 
     for candidate in candidates:
+
         if candidate in df.columns:
             return candidate
 
     if required:
+
         raise ValueError(
             "Nenhuma coluna compatível encontrada. "
-            f"Esperadas: {candidates}"
+            f"Esperadas: {candidates}. "
+            f"Disponíveis: {list(df.columns)}"
         )
 
     return None
@@ -236,7 +240,10 @@ def find_column(df, candidates, required=True):
 # 10. PADRONIZAR BASE DE PREÇOS
 # ============================================================
 
-def normalize_price_source(df, source_name):
+def normalize_price_source(
+    df,
+    source_name,
+):
 
     df = normalize_columns(df)
 
@@ -337,6 +344,7 @@ def normalize_price_source(df, source_name):
     )
 
     for column in PRICE_COLUMNS:
+
         result[column] = pd.to_numeric(
             result[column],
             errors="coerce",
@@ -363,14 +371,22 @@ def normalize_price_source(df, source_name):
     result = result[
         result["HIGH"]
         >= result[
-            ["OPEN", "LOW", "CLOSE"]
+            [
+                "OPEN",
+                "LOW",
+                "CLOSE",
+            ]
         ].max(axis=1)
     ]
 
     result = result[
         result["LOW"]
         <= result[
-            ["OPEN", "HIGH", "CLOSE"]
+            [
+                "OPEN",
+                "HIGH",
+                "CLOSE",
+            ]
         ].min(axis=1)
     ]
 
@@ -386,6 +402,7 @@ def normalize_price_source(df, source_name):
 def load_market_history():
 
     if not MARKET_HISTORY_FILE.exists():
+
         raise FileNotFoundError(
             "\nBase histórica B3 LIVE não encontrada:\n"
             f"{MARKET_HISTORY_FILE}\n\n"
@@ -406,9 +423,20 @@ def load_market_history():
         "B3_COTAHIST",
     )
 
-    print("Registros históricos:", len(history))
-    print("Primeira data:", history["DATE"].min())
-    print("Última data:", history["DATE"].max())
+    print(
+        "Registros históricos:",
+        len(history),
+    )
+
+    print(
+        "Primeira data:",
+        history["DATE"].min(),
+    )
+
+    print(
+        "Última data:",
+        history["DATE"].max(),
+    )
 
     return history
 
@@ -452,11 +480,22 @@ def load_current_year_prices():
         "B3_SPRE",
     )
 
-    print("Registros ano corrente:", len(current))
+    print(
+        "Registros ano corrente:",
+        len(current),
+    )
 
     if not current.empty:
-        print("Primeira data:", current["DATE"].min())
-        print("Última data:", current["DATE"].max())
+
+        print(
+            "Primeira data:",
+            current["DATE"].min(),
+        )
+
+        print(
+            "Última data:",
+            current["DATE"].max(),
+        )
 
     return current
 
@@ -470,7 +509,9 @@ def build_price_history():
     history = load_market_history()
     current = load_current_year_prices()
 
-    frames = [history]
+    frames = [
+        history,
+    ]
 
     if not current.empty:
         frames.append(current)
@@ -501,15 +542,30 @@ def build_price_history():
             ]
         )
         .drop_duplicates(
-            subset=["TICKER", "DATE"],
+            subset=[
+                "TICKER",
+                "DATE",
+            ],
             keep="last",
         )
-        .drop(columns=["SOURCE_PRIORITY"])
-        .sort_values(["TICKER", "DATE"])
-        .reset_index(drop=True)
+        .drop(
+            columns=[
+                "SOURCE_PRIORITY",
+            ]
+        )
+        .sort_values(
+            [
+                "TICKER",
+                "DATE",
+            ]
+        )
+        .reset_index(
+            drop=True
+        )
     )
 
     if prices.empty:
+
         raise RuntimeError(
             "Nenhum preço B3 disponível."
         )
@@ -517,10 +573,26 @@ def build_price_history():
     print("\n" + "=" * 80)
     print("HISTÓRICO B3 CONSOLIDADO")
     print("=" * 80)
-    print("Registros:", len(prices))
-    print("Tickers:", prices["TICKER"].nunique())
-    print("Primeira data:", prices["DATE"].min())
-    print("Última data:", prices["DATE"].max())
+
+    print(
+        "Registros:",
+        len(prices),
+    )
+
+    print(
+        "Tickers:",
+        prices["TICKER"].nunique(),
+    )
+
+    print(
+        "Primeira data:",
+        prices["DATE"].min(),
+    )
+
+    print(
+        "Última data:",
+        prices["DATE"].max(),
+    )
 
     return prices
 
@@ -532,10 +604,12 @@ def build_price_history():
 def load_fundamental_universe():
 
     if not FUNDAMENTAL_INPUT_FILE.exists():
+
         raise FileNotFoundError(
             "\nFundamental LIVE não encontrado:\n"
             f"{FUNDAMENTAL_INPUT_FILE}\n\n"
-            "Execute primeiro build_live_fundamental_input.py."
+            "Execute primeiro "
+            "build_live_fundamental_input.py."
         )
 
     fundamental = pd.read_csv(
@@ -543,9 +617,12 @@ def load_fundamental_universe():
         low_memory=False,
     )
 
-    fundamental = normalize_columns(fundamental)
+    fundamental = normalize_columns(
+        fundamental
+    )
 
     if "TICKER" not in fundamental.columns:
+
         raise ValueError(
             "fundamental_input_live.csv "
             "não possui TICKER."
@@ -568,7 +645,11 @@ def load_fundamental_universe():
     print("\n" + "=" * 80)
     print("UNIVERSO FUNDAMENTAL LIVE")
     print("=" * 80)
-    print("Tickers:", len(tickers))
+
+    print(
+        "Tickers:",
+        len(tickers),
+    )
 
     return tickers
 
@@ -580,6 +661,7 @@ def load_fundamental_universe():
 def load_cvm_ticker_map():
 
     if not FCA_SECURITY_HISTORY_FILE.exists():
+
         raise FileNotFoundError(
             "\nHistórico FCA não encontrado:\n"
             f"{FCA_SECURITY_HISTORY_FILE}\n\n"
@@ -591,11 +673,16 @@ def load_cvm_ticker_map():
         low_memory=False,
     )
 
-    fca = normalize_columns(fca)
+    fca = normalize_columns(
+        fca
+    )
 
     cd_col = find_column(
         fca,
-        ["CD_CVM", "CODIGO_CVM"],
+        [
+            "CD_CVM",
+            "CODIGO_CVM",
+        ],
     )
 
     ticker_col = find_column(
@@ -609,7 +696,10 @@ def load_cvm_ticker_map():
     )
 
     mapping = fca[
-        [cd_col, ticker_col]
+        [
+            cd_col,
+            ticker_col,
+        ]
     ].copy()
 
     mapping.columns = [
@@ -631,7 +721,12 @@ def load_cvm_ticker_map():
 
     mapping = (
         mapping
-        .dropna(subset=["CD_CVM", "TICKER"])
+        .dropna(
+            subset=[
+                "CD_CVM",
+                "TICKER",
+            ]
+        )
         .drop_duplicates()
     )
 
@@ -648,17 +743,24 @@ def load_cvm_ticker_map():
     )
 
     if ambiguous:
+
         mapping = mapping[
-            ~mapping["TICKER"].isin(ambiguous)
+            ~mapping["TICKER"].isin(
+                ambiguous
+            )
         ].copy()
 
     mapping = (
         mapping
         .drop_duplicates(
-            subset=["TICKER"],
+            subset=[
+                "TICKER",
+            ],
             keep="last",
         )
-        .reset_index(drop=True)
+        .reset_index(
+            drop=True
+        )
     )
 
     return mapping
@@ -688,7 +790,9 @@ def prepare_technical_universe(
     )
 
     prices = prices.dropna(
-        subset=["CD_CVM"]
+        subset=[
+            "CD_CVM",
+        ]
     )
 
     prices["CD_CVM"] = pd.to_numeric(
@@ -716,10 +820,13 @@ def prepare_technical_universe(
             ],
             keep="last",
         )
-        .reset_index(drop=True)
+        .reset_index(
+            drop=True
+        )
     )
 
     if prices.empty:
+
         raise RuntimeError(
             "Nenhuma empresa fundamental possui "
             "histórico técnico B3 utilizável."
@@ -741,11 +848,18 @@ def detect_action_ratio(r):
         return np.nan, np.nan
 
     errors = (
-        np.abs(r - ACTION_RATIOS)
-        / ACTION_RATIOS
+        np.abs(
+            r - ACTION_RATIOS
+        )
+        /
+        ACTION_RATIOS
     )
 
-    idx = int(np.argmin(errors))
+    idx = int(
+        np.argmin(
+            errors
+        )
+    )
 
     candidate = ACTION_RATIOS[idx]
     error = errors[idx]
@@ -775,7 +889,10 @@ def neutralize_corporate_actions(df):
     ]
 
     for column in PRICE_COLUMNS:
-        df[f"RAW_{column}"] = df[column]
+
+        df[
+            f"RAW_{column}"
+        ] = df[column]
 
     df["PREV_CLOSE_RAW"] = (
         df.groupby(
@@ -787,33 +904,43 @@ def neutralize_corporate_actions(df):
 
     df["RAW_PRICE_RATIO"] = (
         df["RAW_CLOSE"]
-        / df["PREV_CLOSE_RAW"]
+        /
+        df["PREV_CLOSE_RAW"]
     )
 
     df["RAW_RETURN_1D"] = (
-        df["RAW_PRICE_RATIO"] - 1
+        df["RAW_PRICE_RATIO"]
+        - 1
     )
 
     detected = (
         df["RAW_PRICE_RATIO"]
-        .apply(detect_action_ratio)
+        .apply(
+            detect_action_ratio
+        )
     )
 
     df["DETECTED_ACTION_RATIO"] = [
-        item[0] for item in detected
+        item[0]
+        for item in detected
     ]
 
     df["ACTION_RELATIVE_ERROR"] = [
-        item[1] for item in detected
+        item[1]
+        for item in detected
     ]
 
     df["CORPORATE_ACTION_FLAG"] = (
-        df["DETECTED_ACTION_RATIO"].notna()
+        df[
+            "DETECTED_ACTION_RATIO"
+        ].notna()
     )
 
     df["ACTION_MULTIPLIER"] = np.where(
         df["CORPORATE_ACTION_FLAG"],
-        1.0 / df["DETECTED_ACTION_RATIO"],
+        1.0
+        /
+        df["DETECTED_ACTION_RATIO"],
         1.0,
     )
 
@@ -826,9 +953,13 @@ def neutralize_corporate_actions(df):
     )
 
     for column in PRICE_COLUMNS:
+
         df[column] = (
-            df[f"RAW_{column}"]
-            * df["PRICE_SCALE"]
+            df[
+                f"RAW_{column}"
+            ]
+            *
+            df["PRICE_SCALE"]
         )
 
     df["ADJ_RETURN_1D"] = (
@@ -836,11 +967,15 @@ def neutralize_corporate_actions(df):
             group_cols,
             observed=True,
         )["CLOSE"]
-        .pct_change(fill_method=None)
+        .pct_change(
+            fill_method=None
+        )
     )
 
     events = df[
-        df["CORPORATE_ACTION_FLAG"]
+        df[
+            "CORPORATE_ACTION_FLAG"
+        ]
     ].copy()
 
     event_columns = [
@@ -860,7 +995,9 @@ def neutralize_corporate_actions(df):
         "ADJ_RETURN_1D",
     ]
 
-    events[event_columns].to_csv(
+    events[
+        event_columns
+    ].to_csv(
         CORPORATE_ACTION_FILE,
         index=False,
         encoding="utf-8-sig",
@@ -874,7 +1011,8 @@ def neutralize_corporate_actions(df):
     print(
         "Empresas afetadas:",
         events["CD_CVM"].nunique()
-        if not events.empty else 0,
+        if not events.empty
+        else 0,
     )
 
     return df
@@ -903,30 +1041,44 @@ def create_technical_segments(df):
             group_cols,
             observed=True,
         )["CLOSE"]
-        .pct_change(fill_method=None)
+        .pct_change(
+            fill_method=None
+        )
     )
 
     df["RESIDUAL_DISCONTINUITY"] = (
-        df["RETURN_1D_ADJUSTED"].abs()
-        > RESIDUAL_RETURN_LIMIT
+        df[
+            "RETURN_1D_ADJUSTED"
+        ]
+        .abs()
+        >
+        RESIDUAL_RETURN_LIMIT
     )
 
     df["RESIDUAL_BREAK_N"] = (
         df.groupby(
             group_cols,
             observed=True,
-        )["RESIDUAL_DISCONTINUITY"]
+        )[
+            "RESIDUAL_DISCONTINUITY"
+        ]
         .cumsum()
     )
 
     df["TECH_SEGMENT_ID"] = (
-        df["SEGMENT_ID"].astype(str)
-        + "_"
-        + df["RESIDUAL_BREAK_N"].astype(str)
+        df["SEGMENT_ID"]
+        .astype(str)
+        +
+        "_"
+        +
+        df["RESIDUAL_BREAK_N"]
+        .astype(str)
     )
 
     residuals = df[
-        df["RESIDUAL_DISCONTINUITY"]
+        df[
+            "RESIDUAL_DISCONTINUITY"
+        ]
     ].copy()
 
     residual_columns = [
@@ -941,7 +1093,9 @@ def create_technical_segments(df):
         "RESIDUAL_DISCONTINUITY",
     ]
 
-    residuals[residual_columns].to_csv(
+    residuals[
+        residual_columns
+    ].to_csv(
         RESIDUAL_FILE,
         index=False,
         encoding="utf-8-sig",
@@ -990,18 +1144,30 @@ def calculate_indicators(df):
     df = (
         df
         .sort_values(
-            technical_group + ["DATE"]
+            technical_group
+            +
+            [
+                "DATE",
+            ]
         )
-        .reset_index(drop=True)
+        .reset_index(
+            drop=True
+        )
     )
+
+    # RETURN 1D
 
     df["RETURN_1D"] = (
         df.groupby(
             technical_group,
             observed=True,
         )["CLOSE"]
-        .pct_change(fill_method=None)
+        .pct_change(
+            fill_method=None
+        )
     )
+
+    # SMA 50
 
     df["SMA_50"] = (
         df.groupby(
@@ -1017,11 +1183,21 @@ def calculate_indicators(df):
         )
     )
 
+    # DIST SMA 50
+
     df["DIST_SMA_50"] = (
         df["CLOSE"]
-        / df["SMA_50"].replace(0, np.nan)
-        - 1
+        /
+        df["SMA_50"]
+        .replace(
+            0,
+            np.nan,
+        )
+        -
+        1
     )
+
+    # SMA 200
 
     df["SMA_200"] = (
         df.groupby(
@@ -1037,11 +1213,21 @@ def calculate_indicators(df):
         )
     )
 
+    # DIST SMA 200
+
     df["DIST_SMA_200"] = (
         df["CLOSE"]
-        / df["SMA_200"].replace(0, np.nan)
-        - 1
+        /
+        df["SMA_200"]
+        .replace(
+            0,
+            np.nan,
+        )
+        -
+        1
     )
+
+    # SMA200 SLOPE 20D
 
     df["SMA200_SLOPE_20D"] = (
         df.groupby(
@@ -1052,11 +1238,15 @@ def calculate_indicators(df):
             lambda s:
             (
                 s
-                / s.shift(20)
-                - 1
+                /
+                s.shift(20)
+                -
+                1
             )
         )
     )
+
+    # ROC 60
 
     df["ROC_60"] = (
         df.groupby(
@@ -1067,11 +1257,15 @@ def calculate_indicators(df):
             lambda s:
             (
                 s
-                / s.shift(60)
-                - 1
+                /
+                s.shift(60)
+                -
+                1
             )
         )
     )
+
+    # MACD
 
     df["EMA_12"] = np.nan
     df["EMA_26"] = np.nan
@@ -1087,10 +1281,15 @@ def calculate_indicators(df):
 
     for _, indexes in grouped.groups.items():
 
-        indexes = list(indexes)
+        indexes = list(
+            indexes
+        )
 
         close = (
-            df.loc[indexes, "CLOSE"]
+            df.loc[
+                indexes,
+                "CLOSE",
+            ]
             .astype(float)
         )
 
@@ -1099,7 +1298,8 @@ def calculate_indicators(df):
                 span=12,
                 adjust=False,
                 min_periods=12,
-            ).mean()
+            )
+            .mean()
         )
 
         ema26 = (
@@ -1107,20 +1307,30 @@ def calculate_indicators(df):
                 span=26,
                 adjust=False,
                 min_periods=26,
-            ).mean()
+            )
+            .mean()
         )
 
-        macd = ema12 - ema26
+        macd = (
+            ema12
+            -
+            ema26
+        )
 
         signal = (
             macd.ewm(
                 span=9,
                 adjust=False,
                 min_periods=9,
-            ).mean()
+            )
+            .mean()
         )
 
-        histogram = macd - signal
+        histogram = (
+            macd
+            -
+            signal
+        )
 
         df.loc[
             indexes,
@@ -1149,10 +1359,16 @@ def calculate_indicators(df):
 
     df["MACD_HIST_PCT"] = (
         df["MACD_HIST_RAW"]
-        / df["CLOSE"].replace(0, np.nan)
+        /
+        df["CLOSE"]
+        .replace(
+            0,
+            np.nan,
+        )
     )
 
-    # Bollinger 20,2 — Cell06B: std(ddof=0)
+    # BOLLINGER 20,2
+    # Cell06B corrigida: std(ddof=0)
 
     df["BB_MID"] = (
         df.groupby(
@@ -1178,29 +1394,45 @@ def calculate_indicators(df):
             s.rolling(
                 20,
                 min_periods=20,
-            ).std(ddof=0)
+            ).std(
+                ddof=0
+            )
         )
     )
 
     df["BB_UPPER"] = (
         df["BB_MID"]
-        + 2 * df["BB_STD"]
+        +
+        2
+        *
+        df["BB_STD"]
     )
 
     df["BB_LOWER"] = (
         df["BB_MID"]
-        - 2 * df["BB_STD"]
+        -
+        2
+        *
+        df["BB_STD"]
     )
 
     bb_range = (
         df["BB_UPPER"]
-        - df["BB_LOWER"]
+        -
+        df["BB_LOWER"]
     )
 
     df["BB_WIDTH"] = (
         bb_range
-        / df["BB_MID"].replace(0, np.nan)
+        /
+        df["BB_MID"]
+        .replace(
+            0,
+            np.nan,
+        )
     )
+
+    # TRUE RANGE / ATR 14
 
     df["PREV_CLOSE"] = (
         df.groupby(
@@ -1210,24 +1442,36 @@ def calculate_indicators(df):
         .shift(1)
     )
 
-    tr1 = df["HIGH"] - df["LOW"]
+    tr1 = (
+        df["HIGH"]
+        -
+        df["LOW"]
+    )
 
     tr2 = (
         df["HIGH"]
-        - df["PREV_CLOSE"]
+        -
+        df["PREV_CLOSE"]
     ).abs()
 
     tr3 = (
         df["LOW"]
-        - df["PREV_CLOSE"]
+        -
+        df["PREV_CLOSE"]
     ).abs()
 
     df["TRUE_RANGE"] = (
         pd.concat(
-            [tr1, tr2, tr3],
+            [
+                tr1,
+                tr2,
+                tr3,
+            ],
             axis=1,
         )
-        .max(axis=1)
+        .max(
+            axis=1
+        )
     )
 
     df["ATR_14"] = (
@@ -1246,7 +1490,12 @@ def calculate_indicators(df):
 
     df["ATR_PCT"] = (
         df["ATR_14"]
-        / df["CLOSE"].replace(0, np.nan)
+        /
+        df["CLOSE"]
+        .replace(
+            0,
+            np.nan,
+        )
     )
 
     return df
@@ -1265,6 +1514,7 @@ def extract_production_data(df):
     ]
 
     if missing:
+
         raise RuntimeError(
             "Colunas técnicas ausentes após cálculo: "
             f"{missing}"
@@ -1291,7 +1541,9 @@ def extract_production_data(df):
             ],
             keep="last",
         )
-        .reset_index(drop=True)
+        .reset_index(
+            drop=True
+        )
     )
 
     return output
@@ -1311,6 +1563,7 @@ def audit_technical_data(
     print("=" * 80)
 
     if technical.empty:
+
         raise RuntimeError(
             "Base técnica LIVE vazia."
         )
@@ -1324,6 +1577,7 @@ def audit_technical_data(
     ).sum()
 
     if duplicates:
+
         raise RuntimeError(
             "Duplicidades CD_CVM/TICKER/DATE "
             "na base técnica LIVE."
@@ -1334,7 +1588,11 @@ def audit_technical_data(
             technical["HIGH"]
             <
             technical[
-                ["OPEN", "LOW", "CLOSE"]
+                [
+                    "OPEN",
+                    "LOW",
+                    "CLOSE",
+                ]
             ].max(axis=1)
         )
         |
@@ -1342,12 +1600,17 @@ def audit_technical_data(
             technical["LOW"]
             >
             technical[
-                ["OPEN", "HIGH", "CLOSE"]
+                [
+                    "OPEN",
+                    "HIGH",
+                    "CLOSE",
+                ]
             ].min(axis=1)
         )
     ]
 
     if not invalid_ohlc.empty:
+
         raise RuntimeError(
             "OHLC inválido após ajuste técnico."
         )
@@ -1364,7 +1627,8 @@ def audit_technical_data(
 
     missing_tickers = sorted(
         fundamental_set
-        - technical_tickers
+        -
+        technical_tickers
     )
 
     print(
@@ -1382,7 +1646,10 @@ def audit_technical_data(
         len(missing_tickers),
     )
 
-    print("Registros:", len(technical))
+    print(
+        "Registros:",
+        len(technical),
+    )
 
     print(
         "Segmentos técnicos:",
@@ -1406,13 +1673,17 @@ def audit_technical_data(
     for indicator in TECHNICAL_INDICATORS:
 
         valid = int(
-            technical[indicator]
+            technical[
+                indicator
+            ]
             .notna()
             .sum()
         )
 
         missing = int(
-            technical[indicator]
+            technical[
+                indicator
+            ]
             .isna()
             .sum()
         )
@@ -1438,6 +1709,7 @@ def audit_technical_data(
     ]
 
     if violations:
+
         raise RuntimeError(
             "Violação da arquitetura técnica. "
             f"Colunas proibidas: {violations}"
@@ -1445,7 +1717,9 @@ def audit_technical_data(
 
     if missing_tickers:
 
-        print("\nATENÇÃO:")
+        print(
+            "\nATENÇÃO:"
+        )
 
         print(
             "Ausência de contexto técnico NÃO reprova "
@@ -1462,11 +1736,19 @@ def audit_technical_data(
 # 23. AUDITORIA DE ATUALIDADE
 # ============================================================
 
-def audit_freshness(technical):
+def audit_freshness(
+    technical,
+):
 
-    latest_date = technical["DATE"].max()
+    latest_date = (
+        technical["DATE"]
+        .max()
+    )
 
-    if pd.isna(latest_date):
+    if pd.isna(
+        latest_date
+    ):
+
         raise RuntimeError(
             "Não foi possível determinar "
             "a data mais recente da base técnica."
@@ -1478,7 +1760,10 @@ def audit_freshness(technical):
 
     age_days = (
         now_utc.normalize()
-        - pd.Timestamp(latest_date).normalize()
+        -
+        pd.Timestamp(
+            latest_date
+        ).normalize()
     ).days
 
     print("\n" + "=" * 80)
@@ -1487,7 +1772,9 @@ def audit_freshness(technical):
 
     print(
         "Último pregão disponível:",
-        pd.Timestamp(latest_date).date(),
+        pd.Timestamp(
+            latest_date
+        ).date(),
     )
 
     print(
@@ -1497,6 +1784,7 @@ def audit_freshness(technical):
     )
 
     if age_days > 10:
+
         raise RuntimeError(
             "\nBASE TÉCNICA DESATUALIZADA.\n\n"
             f"Última data disponível: {latest_date}\n"
@@ -1520,7 +1808,9 @@ def save_manifest(
 
     latest_rows = (
         technical
-        .sort_values("DATE")
+        .sort_values(
+            "DATE"
+        )
         .groupby(
             "TICKER",
             as_index=False,
@@ -1533,7 +1823,9 @@ def save_manifest(
             TECHNICAL_INDICATORS
         ]
         .notna()
-        .all(axis=1)
+        .all(
+            axis=1
+        )
         .sum()
     )
 
@@ -1554,27 +1846,39 @@ def save_manifest(
             ).isoformat(),
 
         "market_history_source":
-            str(MARKET_HISTORY_FILE),
+            str(
+                MARKET_HISTORY_FILE
+            ),
 
         "current_year_source":
-            str(SPRE_PRICES_FILE),
+            str(
+                SPRE_PRICES_FILE
+            ),
 
         "fundamental_source":
-            str(FUNDAMENTAL_INPUT_FILE),
+            str(
+                FUNDAMENTAL_INPUT_FILE
+            ),
 
         "rows":
-            int(len(technical)),
+            int(
+                len(
+                    technical
+                )
+            ),
 
         "companies":
             int(
-                technical["CD_CVM"]
-                .nunique()
+                technical[
+                    "CD_CVM"
+                ].nunique()
             ),
 
         "tickers":
             int(
-                technical["TICKER"]
-                .nunique()
+                technical[
+                    "TICKER"
+                ].nunique()
             ),
 
         "technical_segments":
@@ -1592,10 +1896,14 @@ def save_manifest(
             ),
 
         "latest_complete_technical_context":
-            int(latest_complete),
+            int(
+                latest_complete
+            ),
 
         "missing_fundamental_tickers":
-            audit["missing_tickers"],
+            audit[
+                "missing_tickers"
+            ],
 
         "corporate_action_method":
             "MECHANICAL_DISCONTINUITY_NEUTRALIZATION",
@@ -1683,16 +1991,23 @@ def main():
     print("UNIVERSO TÉCNICO LIVE")
     print("=" * 80)
 
-    print("Registros:", len(technical))
+    print(
+        "Registros:",
+        len(technical),
+    )
 
     print(
         "Empresas:",
-        technical["CD_CVM"].nunique(),
+        technical[
+            "CD_CVM"
+        ].nunique(),
     )
 
     print(
         "Tickers:",
-        technical["TICKER"].nunique(),
+        technical[
+            "TICKER"
+        ].nunique(),
     )
 
     technical = (
@@ -1745,33 +2060,93 @@ def main():
     )
 
     print("\n" + "=" * 80)
-    print("✓ technical_prices_live.csv criado.")
-    print("✓ Dados técnicos: LIVE.")
-    print("✓ Metodologia: CONGELADA.")
-    print("✓ Eventos corporativos Cell05B recalculados.")
-    print("✓ Segmentação Cell06B recalculada.")
-    print("✓ SMA200_SLOPE_20D recalculado.")
-    print("✓ ATR_PCT recalculado.")
-    print("✓ ROC_60 recalculado.")
-    print("✓ MACD_HIST_PCT recalculado.")
-    print("✓ DIST_SMA_200 recalculado.")
-    print("✓ BB_WIDTH recalculado.")
-    print("✓ DIST_SMA_50 recalculado.")
-    print("✓ Nenhum Technical Score criado.")
-    print("✓ Nenhum gatilho técnico obrigatório criado.")
-    print("✓ Ranking fundamental não foi alterado.")
-    print("✓ Técnico permanece somente como contexto.")
+
+    print(
+        "✓ technical_prices_live.csv criado."
+    )
+
+    print(
+        "✓ Dados técnicos: LIVE."
+    )
+
+    print(
+        "✓ Metodologia: CONGELADA."
+    )
+
+    print(
+        "✓ Eventos corporativos Cell05B recalculados."
+    )
+
+    print(
+        "✓ Segmentação Cell06B recalculada."
+    )
+
+    print(
+        "✓ SMA200_SLOPE_20D recalculado."
+    )
+
+    print(
+        "✓ ATR_PCT recalculado."
+    )
+
+    print(
+        "✓ ROC_60 recalculado."
+    )
+
+    print(
+        "✓ MACD_HIST_PCT recalculado."
+    )
+
+    print(
+        "✓ DIST_SMA_200 recalculado."
+    )
+
+    print(
+        "✓ BB_WIDTH recalculado."
+    )
+
+    print(
+        "✓ DIST_SMA_50 recalculado."
+    )
+
+    print(
+        "✓ Nenhum Technical Score criado."
+    )
+
+    print(
+        "✓ Nenhum gatilho técnico obrigatório criado."
+    )
+
+    print(
+        "✓ Ranking fundamental não foi alterado."
+    )
+
+    print(
+        "✓ Técnico permanece somente como contexto."
+    )
 
     print(
         "\nÚltimo pregão:",
-        pd.Timestamp(latest_date).date(),
+        pd.Timestamp(
+            latest_date
+        ).date(),
     )
 
-    print("\nArquivo:")
-    print(OUTPUT_FILE)
+    print(
+        "\nArquivo:"
+    )
 
-    print("\nManifesto:")
-    print(MANIFEST_FILE)
+    print(
+        OUTPUT_FILE
+    )
+
+    print(
+        "\nManifesto:"
+    )
+
+    print(
+        MANIFEST_FILE
+    )
 
     print("=" * 80)
 
@@ -1781,4 +2156,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
